@@ -23,6 +23,10 @@ Fluxo: critérios, plano, CP1 humano, dev, checks, revisão independente,
 documentação. Tarefas médias e grandes também usam CP0. O estado local
 fica em .local/; publicação e merge dependem de pessoas.
 
+O runner atual opera **um repositório por tarefa**. Uma demanda que altera back
+e front exige duas tarefas, com contrato de integração explícito e conferência
+conjunta fora do runner. Cada tarefa tem seus próprios checkpoints e revisão.
+
 Este repositório contém código, testes e documentos genéricos, sem dados
 internos. É uma distribuição de estudo, sem validação dos provedores
 reais em outro ambiente. Tarifas de API não representam quota oficial.

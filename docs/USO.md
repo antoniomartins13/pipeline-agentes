@@ -13,6 +13,9 @@ No diretório da workspace:
 
 init requer ID, alias do repositório, especificação, base, escopo e checks
 como listas JSON argv. O checkout deve estar limpo numa branch da tarefa.
+O manifesto registra um único repositório. Para uma mudança em dois repos,
+cadastre duas tarefas e compartilhe o contrato entre as especificações.
+Valide a integração separadamente; os checks de uma tarefa não cobrem a outra.
 No PowerShell 5.1, JSON inline pode perder aspas; confira os argumentos
 recebidos ou passe-os como argv de Python.
 

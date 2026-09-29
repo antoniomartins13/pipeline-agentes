@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "context": {"warn_tokens": 150000, "transition_tokens": 250000},
+  "max_slices_per_run": 6,
+  "max_rounds": 3,
+  "timeout_seconds": 1800,
+  "providers": {"plan": "claude", "dev": "codex", "review": "claude", "docs": "codex"},
+  "notes": "Preferencias experimentais, nao ranking de capacidade. Revisor independente; sem fallback automatico por quota."
+}

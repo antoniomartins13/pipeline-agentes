@@ -1,0 +1,8 @@
+{
+  "timezone": "-03:00",
+  "repositories": {
+    "app-backend": "../app-backend",
+    "app-web": "../app-web"
+  },
+  "notes": "Copy to local.json and adjust paths. Do not commit local.json."
+}

@@ -379,14 +379,30 @@ def coordinator_prompt(alvo, info):
     )
 
 
-def spawn_coordinator(alvo, info):
-    """Abre a sessao coordenadora na pasta da funcionalidade (sala dela no Habblaud), uma vez por ambiente."""
+def review_coordinator_prompt(alvo, info):
+    mrs = ', '.join(f"{t['task']} ({(t.get('mr') or {}).get('url', '')})" for t in info['tarefas'])
+    return (
+        f'Você é a sessão coordenadora da revisão {alvo}: MRs de colega {mrs}, com o card em "Em Fase de Teste". '
+        f'O ambiente de teste já está no ar: leia {ROOT / info["roteiro"]} e {STATE_DIR / (alvo + ".json")}. '
+        f'Na primeira resposta, entregue a {runner.DONO}, em português e curto: os links dos servidores (tailnet), os links '
+        'dos MRs, se houve migration no banco local e o roteiro em passos numerados. '
+        'Depois fique à disposição para dúvidas sobre o que o MR muda (diff nos worktrees de _review-wt e os arquivos da '
+        f'pasta {ROOT / "tarefas" / alvo}). Confira os servidores com `systemctl --user status "revisao-{alvo}-*"` e, se '
+        f'algum cair, suba de novo com `python3 {ROOT / "scripts" / "ambiente_revisao.py"} revisao {alvo}`. '
+        'Regras: não edite código, não faça commit/push, não comente no MR, no Trello ou no GitLab e não mexa no banco. '
+        'O parecer (review-report.md) é privado: use só para responder aqui, nunca copie para fora. Não registre '
+        'APROVAR, RECUPERAR, CONCLUIR nem CORRIGIR.'
+    )
+
+
+def spawn_coordinator(alvo, info, prompt=None):
+    """Abre a sessao coordenadora na pasta da funcionalidade/revisao (sala dela no Habblaud), uma vez por ambiente."""
     import urllib.request
     old = (info.get('coordenador') or {})
     if old.get('id') and not old.get('erro'):
         return old
     folder = ROOT / 'tarefas' / alvo
-    body = json.dumps({'folder': str(folder), 'prompt': coordinator_prompt(alvo, info)}).encode('utf-8')
+    body = json.dumps({'folder': str(folder), 'prompt': prompt or coordinator_prompt(alvo, info)}).encode('utf-8')
     req = urllib.request.Request(HABBLAUD + '/api/spawn', data=body, method='POST',
                                  headers={'Content-Type': 'application/json', 'Origin': 'http://localhost:4747'})
     try:
@@ -565,8 +581,14 @@ def preparar_revisao(alvo):
             info['migracao'] = {'status': 'erro', 'motivo': str(error)[:300]}
     subir_servidores(alvo, info, host, ports, repos)
     info['roteiro'] = write_roteiro_revisao(alvo, info)
+    previous = STATE_DIR / (alvo + '.json')
+    if previous.exists() and not runner.read(previous).get('encerrado_em'):
+        info['coordenador'] = runner.read(previous).get('coordenador')
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     runner.save(STATE_DIR / (alvo + '.json'), info)
+    if not os.environ.get('PIPELINE_SEM_AMBIENTE'):
+        info['coordenador'] = spawn_coordinator(alvo, info, review_coordinator_prompt(alvo, info))
+        runner.save(STATE_DIR / (alvo + '.json'), info)
     return info
 
 

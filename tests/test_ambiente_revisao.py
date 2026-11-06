@@ -91,6 +91,44 @@ class AmbienteTest(unittest.TestCase):
         (repo / 'artisan').write_text('', encoding='utf-8')
         self.assertEqual(amb.kind_of(repo), 'back')
 
+    def test_seed_so_no_banco_local_sem_operacao_proibida_e_uma_vez_por_versao(self):
+        repo = self.root / 'back'
+        (repo / '.revisao').mkdir(parents=True)
+        self.assertEqual(amb.apply_seed('ent', repo)['status'], 'sem_seed')
+        seed = repo / '.revisao' / 'seed.php'
+        seed.write_text('Processo::firstOrCreate(["n" => 1]); echo "Processo 1";', encoding='utf-8')
+        (repo / '.env').write_text('DB_HOST=10.0.0.5\nAPP_ENV=local\n', encoding='utf-8')
+        self.assertIn('nao e local', amb.apply_seed('ent', repo)['motivo'])
+        (repo / '.env').write_text('DB_HOST=127.0.0.1\nAPP_ENV=local\n', encoding='utf-8')
+        seed.write_text('Processo::query()->delete();', encoding='utf-8')
+        self.assertEqual(amb.apply_seed('ent', repo)['status'], 'barrado')
+        seed.write_text('Processo::firstOrCreate(["n" => 1]); echo "Processo 1";', encoding='utf-8')
+        ran = []
+
+        def fake_run(args, **kwargs):
+            ran.append(args)
+            return type('R', (), {'returncode': 0, 'stdout': 'Processo 1\n', 'stderr': ''})()
+        with patch.object(amb.subprocess, 'run', side_effect=fake_run):
+            first = amb.apply_seed('ent', repo)
+            self.assertEqual((first['status'], first['registros']), ('aplicado', ['Processo 1']))
+            amb.runner.save(amb.STATE_DIR / 'ent.json', {'seed': first})
+            self.assertEqual(amb.apply_seed('ent', repo), first)  # mesma versao: nao roda de novo
+        self.assertEqual(len(ran), 1)
+        self.assertIn('tinker', ran[0])
+
+    def test_pasta_revisao_fica_fora_do_git(self):
+        import subprocess
+        repo = self.root / 'git'
+        repo.mkdir()
+        subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+        amb.runner.exclude_revisao(repo)
+        amb.runner.exclude_revisao(repo)  # idempotente
+        (repo / '.revisao').mkdir()
+        (repo / '.revisao' / 'seed.php').write_text('echo 1;', encoding='utf-8')
+        out = subprocess.run(['git', '-C', str(repo), 'status', '--porcelain'], capture_output=True, text=True).stdout
+        self.assertEqual(out, '')
+        self.assertEqual((repo / '.git/info/exclude').read_text().count('/.revisao/'), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

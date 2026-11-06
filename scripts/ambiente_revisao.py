@@ -286,6 +286,40 @@ def apply_migrations(repo):
     return {'status': 'aplicadas', 'banco': banco, 'sql': sql}
 
 
+# Seed de dados de exemplo: so cria/atualiza registros proprios. Qualquer coisa que apague, reescreva em massa,
+# mexa em estrutura ou chame o shell barra o seed inteiro.
+SEED_PERIGOSO = re.compile(
+    r'->\s*(delete|forceDelete|truncate)\s*\(|::\s*(truncate|destroy|query\(\)\s*->\s*delete)\b|'
+    r'DB::\s*(statement|unprepared|delete|update|raw)\b|Schema::|\b(drop|truncate)\s+table\b|'
+    r'\b(shell_exec|exec|system|passthru|proc_open|popen|unlink|rmdir)\s*\(|`', re.I)
+
+
+def apply_seed(alvo, repo):
+    """Roda .revisao/seed.php (escrito pelo dev do back, fora do MR) no banco LOCAL de revisao, uma vez por versao."""
+    seed = Path(repo) / runner.REVISAO_DIR / 'seed.php'
+    if not seed.exists():
+        return {'status': 'sem_seed'}
+    host, app_env = env_value(repo, 'DB_HOST'), env_value(repo, 'APP_ENV')
+    if host not in ('127.0.0.1', 'localhost') or app_env != 'local':
+        return {'status': 'barrado', 'motivo': f'banco nao e local (DB_HOST={host}, APP_ENV={app_env})'}
+    code = seed.read_text(encoding='utf-8', errors='replace')
+    perigoso = sorted({m.group(0).strip() for m in SEED_PERIGOSO.finditer(code)})
+    if perigoso:
+        return {'status': 'barrado', 'motivo': 'seed com operacao proibida: ' + ', '.join(perigoso)[:200]}
+    digest = runner.digest(code.encode('utf-8'))
+    previous = STATE_DIR / (alvo + '.json')
+    old = (runner.read(previous).get('seed') or {}) if previous.exists() else {}
+    if old.get('status') == 'aplicado' and old.get('hash') == digest:
+        return old
+    run = subprocess.run([shutil.which('php') or 'php', 'artisan', 'tinker', '--no-ansi', '--execute',
+                          f"require base_path('{runner.REVISAO_DIR}/seed.php');"],
+                         cwd=repo, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+    out = (run.stdout or '').strip()
+    if run.returncode:
+        return {'status': 'erro', 'hash': digest, 'motivo': ((run.stderr or '') + out).strip()[-400:]}
+    return {'status': 'aplicado', 'hash': digest, 'registros': out.splitlines()[-30:]}
+
+
 def write_roteiro(alvo, info):
     lines = [f'# Roteiro de teste — {alvo}', '']
     lines.append('## Onde abrir')
@@ -295,6 +329,11 @@ def write_roteiro(alvo, info):
         lines.append(f"- **{t['task']}** ({t.get('kind') or '?'}): "
                      + (f"[servidor]({srv['url']})" if srv.get('url') else 'servidor: ' + str(srv.get('erro', '—')))
                      + ' · ' + (f"[MR !{mr['iid']}]({mr['url']})" if mr.get('url') else 'MR: ' + str(mr.get('erro', '—'))))
+    seed = info.get('seed') or {}
+    if seed.get('status') == 'aplicado':
+        lines += ['', '## Dados de exemplo (já no banco local)', *[f'- {r}' for r in seed.get('registros') or ['(seed sem resumo)']]]
+    elif seed.get('status') in ('barrado', 'erro'):
+        lines += ['', '## Dados de exemplo', f"Não carreguei os dados de exemplo: {seed.get('motivo')}"]
     mig = info.get('migracao') or {}
     if info.get('migrations') or mig.get('sql'):
         if mig.get('status') in ('aplicadas', 'nada'):
@@ -388,6 +427,11 @@ def preparar(alvo):
             info['migracao'] = apply_migrations(repos['back'][1])
         except (OSError, subprocess.SubprocessError) as error:
             info['migracao'] = {'status': 'erro', 'motivo': str(error)[:300]}
+        if (info.get('migracao') or {}).get('status') in ('aplicadas', 'nada'):
+            try:
+                info['seed'] = apply_seed(alvo, repos['back'][1])
+            except (OSError, subprocess.SubprocessError) as error:
+                info['seed'] = {'status': 'erro', 'motivo': str(error)[:300]}
     back_url = f'https://{host}:{ports["back"][1]}' if host and 'back' in repos else 'http://127.0.0.1:8000'
     for entry in info['tarefas']:
         kind = entry['kind']

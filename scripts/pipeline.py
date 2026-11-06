@@ -186,6 +186,36 @@ def repository(manifest):
     return (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
 
 
+# Dados de exemplo do ambiente de revisao (decisao do dono, 06/11/2026: fora do MR). O dev do back escreve
+# .revisao/seed.php no worktree; o git o ignora (info/exclude), entao nao entra no commit, no MR nem no escopo.
+REVISAO_DIR = '.revisao'
+
+
+def exclude_revisao(repo):
+    try:
+        path = Path(git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'))
+    except (subprocess.CalledProcessError, OSError):
+        return
+    text = path.read_text(encoding='utf-8') if path.exists() else ''
+    if '/' + REVISAO_DIR + '/' not in text.splitlines():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + ('\n' if text and not text.endswith('\n') else '') + '/' + REVISAO_DIR + '/\n', encoding='utf-8')
+
+
+def seed_prompt(repo, phase):
+    if not (Path(repo) / 'artisan').exists() or phase not in ('dev', 'docs'):
+        return ''
+    if phase == 'docs':
+        return ('Se existir ' + REVISAO_DIR + '/seed.php no repositorio, o roteiro de teste manual usa os registros que ele cria '
+                'como dados de exemplo (cite-os pelo que aparece na tela).')
+    return ('Dados de exemplo para o teste manual: se a funcionalidade precisa de registros para ser vista na tela, crie ou '
+            'atualize ' + REVISAO_DIR + '/seed.php neste repositorio (fica fora do MR; o runner roda so no banco local de '
+            'revisao). E PHP executado no tinker (sem <?php obrigatorio), idempotente (firstOrCreate/updateOrCreate por chave '
+            'natural), so cria ou atualiza os proprios registros de exemplo com models/factories. Proibido: delete, truncate, '
+            'drop, forceDelete, DB::statement/unprepared/update/delete, Schema, exec/shell e mexer em registros que nao sejam '
+            'os do seed. Termine com echo de uma linha por registro criado (ex.: "Processo 2026/0001 - Contrato Proprio").')
+
+
 def entrega_siblings(task):
     """(tarefa, worktree) das outras tarefas da mesma entrega. Leitura nas fases sem escrita e no prompt:
     o revisor confere o contrato entre os repos (linker). Calculado na hora: task.json (CP1) nao muda."""
@@ -602,6 +632,7 @@ def build_prompt(folder, manifest, state, config):
         (auto_failure(state) or recovered_failure(folder.name)) if phase == 'dev' else '',
         decisoes_humanas(folder),
         linker_prompt(folder.name, phase),
+        seed_prompt(repository(manifest), phase),
         'Documento parcial da fase anterior (se existir): ' + str(folder / (phase + '-partial.md')),
         'Plano: ' + str(folder / 'plan.md') + '. Ler quando existir e for pertinente. Findings: ' + str(folder / 'review-report.md'),
         'Fases plan/docs/review/prototype sao somente leitura do codigo; entregue documento completo no campo document. '
@@ -773,6 +804,7 @@ def execute(task, executor=invoke_fallback):
         manifest = read(folder / 'task.json')
         state = read(local / 'state.json')
         repo = repository(manifest)
+        exclude_revisao(repo)
         if state['phase'] == 'awaiting_CP0':
             # CP0 foi fundido no CP1 (especificacao da funcionalidade + manifesto).
             state['phase'] = 'awaiting_CP1'

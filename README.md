@@ -79,6 +79,15 @@ python3 -m unittest discover -s _pipeline/tests
 - Se algo travar, use `RECUPERAR <tarefa> [dev|validate|plan]`. Só param para você: o limite de rodadas, a falta de
   cota em todos os modelos, mudança de escopo e banco destrutivo.
 
+## Espelho Trello → GitLab (opcional)
+
+`scripts/trello_gitlab.py` transforma os cards do board em que você é membro em issues de um projeto
+de gestão do GitLab. Cada issue leva o link do card, a descrição e as checklists, e uma label `fase::` que segue a lista
+do Trello; a issue fecha quando o card vai para concluído. As tarefas do pipeline que citam o card anexam a spec, o plano
+e a documentação, nunca o parecer da revisão. O Trello continua sendo a fonte: o espelho não escreve nele e não apaga
+nada. Configure `trello_board` e `gestao_project` em `config/local.json` e ponha `TRELLO_KEY` e `TRELLO_TOKEN` em
+`~/.config/pipeline/trello.env`. O timer do pipeline sincroniza no máximo a cada 10 minutos.
+
 Regras completas em [`POLITICA.md`](POLITICA.md). Provedores, limites e a lista de fallback ficam em
 [`config/pipeline.json`](config/pipeline.json).
 

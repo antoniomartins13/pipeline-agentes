@@ -19,7 +19,7 @@ FILES=(
   scripts/pipeline.py scripts/chat_approval_hook.py scripts/ambiente_revisao.py scripts/usage_core.py
   scripts/bootstrap.py scripts/custo.py scripts/budget_hook.py scripts/dashboard.py scripts/retrospectiva.py
   scripts/agy-uso.py scripts/agy-run.sh scripts/instalar-context7.sh scripts/retomar.sh
-  scripts/fila.sh scripts/auto.sh scripts/console.sh scripts/instalar.sh scripts/exportar-publico.sh
+  scripts/trello_gitlab.py scripts/fila.sh scripts/auto.sh scripts/console.sh scripts/instalar.sh scripts/exportar-publico.sh
 )
 DIRS=(entradas papeis templates tests)
 

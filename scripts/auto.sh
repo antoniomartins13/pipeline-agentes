@@ -28,3 +28,6 @@ EOF
 for t in $(pendentes); do
   "$DIR/scripts/fila.sh" "$t"
 done
+
+# Espelho Trello -> GitLab (so com a chave em ~/.config/pipeline/trello.env), no maximo a cada 10 minutos.
+python3 "$DIR/scripts/trello_gitlab.py" sync --se-passou 600 >> "$DIR/.local/gestao.log" 2>&1 || true

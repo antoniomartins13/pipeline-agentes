@@ -107,6 +107,9 @@ def free_ports(alvo):
 def gitlab_env():
     env = os.environ.copy()
     env['GITLAB_HOST'] = GITLAB_HOST
+    # GitLab interno nao passa pelo proxy corporativo (o proxy dava timeout nas chamadas da API).
+    for key in ('NO_PROXY', 'no_proxy'):
+        env[key] = ','.join(x for x in (GITLAB_HOST, env.get(key, '')) if x)
     token_file = Path(GITLAB_TOKEN_FILE).expanduser() if GITLAB_TOKEN_FILE else None
     if token_file and token_file.exists() and not env.get('GITLAB_TOKEN'):
         for line in token_file.read_text(encoding='utf-8').splitlines():

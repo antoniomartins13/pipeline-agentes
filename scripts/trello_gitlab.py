@@ -3,13 +3,14 @@
 
 - Cards do dono (membro do card) no board configurado viram uma issue cada no projeto de gestao, com link do card,
   descricao e checklists. A label fase:: segue a lista do Trello; card em lista de concluido fecha a issue.
-- Tarefas do pipeline cuja spec cita o card: a issue ganha a label pipeline e repo::, e uma nota por documento
+- Tarefas do pipeline ligadas ao card (link ou numero do card): revisao de colega (pasta mr-*) ganha papel::revisao
+  e NADA anexado; desenvolvimento do dono ganha papel::dev e a issue ganha a label pipeline e repo-*, e uma nota por documento
   (task-spec.md, plan.md, documentacao-tecnica.md), atualizada quando o arquivo muda. O parecer da revisao
   (review-report.md) e privado e NUNCA vai.
 - Nunca apaga issue nem nota; nunca escreve no Trello.
 
 Config (config/local.json): "trello_board" (shortLink do board), "gestao_project" (caminho no GitLab),
-"gitlab_host". Chave: ~/.config/pipeline/trello.env com TRELLO_KEY=... e TRELLO_TOKEN=... (criada pelo dono;
+"gitlab_host"; "gestao_sync": true liga a sincronizacao pelo timer (sem ele, so manual). Chave: ~/.config/pipeline/trello.env com TRELLO_KEY=... e TRELLO_TOKEN=... (criada pelo dono;
 vai no cabecalho Authorization, nunca na URL). Estado: .local/gestao.json.
 
 Uso: trello_gitlab.py sync [--se-passou SEGUNDOS] [--dry-run]
@@ -54,8 +55,11 @@ def fase_of(list_name):
     return 'backlog'
 
 
-def issue_body(card, list_name):
-    lines = [f"**Card:** {card['shortUrl']}  ·  **Lista no Trello:** {list_name}", '', (card.get('desc') or '').strip()]
+def issue_body(card, list_name, revisao=False):
+    lines = [f"**Card:** {card['shortUrl']}  ·  **Lista no Trello:** {list_name}"]
+    if revisao:
+        lines.append('**Papel:** revisão de MR de colega. O parecer fica no pipeline e é privado: não vem para cá.')
+    lines += ['', (card.get('desc') or '').strip()]
     for checklist in card.get('checklists') or []:
         lines += ['', f"**{checklist.get('name') or 'Checklist'}**"]
         for item in sorted(checklist.get('checkItems') or [], key=lambda i: i.get('pos', 0)):
@@ -65,24 +69,99 @@ def issue_body(card, list_name):
     return '\n'.join(lines).strip() + '\n'
 
 
-def tasks_for_card(short_link):
-    """Tarefas do pipeline cuja spec cita o card."""
+def manifest_of(task):
+    path = ROOT / 'tarefas' / task / 'task.json'
+    return runner.read(path) if path.exists() else {}
+
+
+def card_short(url):
+    m = re.search(r'trello\.com/c/([A-Za-z0-9]+)', url or '')
+    return m.group(1) if m else None
+
+
+def declared_owners():
+    """card (shortLink) -> {'tarefas': [...], 'origem': ...}: a tabela gestao_cards de config/local.json (excecoes das
+    tarefas antigas, vence tudo) mais o campo "card"/"origem" do task.json das tarefas novas (/iniciar --card)."""
+    owners = {}
+    for folder in sorted(p for p in (ROOT / 'tarefas').iterdir() if p.is_dir()):
+        manifest = manifest_of(folder.name)
+        short = card_short(manifest.get('card'))
+        if short:
+            entry = owners.setdefault(short, {'tarefas': [], 'origem': None})
+            entry['tarefas'].append(folder.name)
+            entry['origem'] = entry['origem'] or manifest.get('origem')
+    for short, override in (runner.settings().get('gestao_cards') or {}).items():
+        owners[short] = {'tarefas': list(override.get('tarefas') or []), 'origem': override.get('origem'),
+                         'papel': override.get('papel', 'dev')}
+    return owners
+
+
+def tasks_for_card(card, owners=None):
+    """(tarefas ligadas ao card [(tarefa, manifesto, papel)], origem). Declarada (task.json "card" ou gestao_cards)
+    vence: o card e desenvolvimento do dono. Sem declaracao, deduz: link ou numero do card no nome/.md de uma pasta;
+    pasta mr-* e revisao de colega. Tarefa declarada para outro card nao conta por mencao."""
+    owners = declared_owners() if owners is None else owners
+    short, number = card.get('shortLink', ''), str(card.get('idShort') or '')
+    if short in owners:
+        own = owners[short]
+        papel = own.get('papel', 'dev')
+        return [(t, manifest_of(t), papel) for t in own['tarefas']], own.get('origem')
+    claimed = {t for own in owners.values() for t in own['tarefas']}
+    num = re.compile(r'(?<!\d)' + re.escape(number) + r'(?!\d)') if number else None
     found = []
-    for spec in sorted((ROOT / 'tarefas').glob('*/task-spec.md')):
-        if f'trello.com/c/{short_link}' in spec.read_text(encoding='utf-8', errors='replace'):
-            manifest = spec.parent / 'task.json'
-            found.append((spec.parent.name, runner.read(manifest) if manifest.exists() else {}))
-    return found
+    for folder in sorted(p for p in (ROOT / 'tarefas').iterdir() if p.is_dir()):
+        if folder.name in claimed:
+            continue
+        texts = [folder.name] + [f.read_text(encoding='utf-8', errors='replace') for f in sorted(folder.glob('*.md'))]
+        blob = '\n'.join(texts)
+        if (short and f'trello.com/c/{short}' in blob) or (num and num.search(blob)):
+            papel = 'revisao' if folder.name.startswith('mr-') else 'dev'
+            found.append((folder.name, manifest_of(folder.name), papel))
+    return found, None
+
+
+def mr_links():
+    """tarefa -> URL do MR, dos ambientes de revisao (.local/ambientes/*.json)."""
+    links = {}
+    for path in sorted((ROOT / '.local' / 'ambientes').glob('*.json')):
+        try:
+            data = runner.read(path)
+        except (OSError, ValueError):
+            continue
+        for item in data.get('tarefas') or [] if isinstance(data, dict) else []:
+            url = (item.get('mr') or {}).get('url')
+            if url:
+                links[item['task']] = url
+    return links
+
+
+def card_report(card, tasks):
+    """Relatorio do que o dono mudou no card: resumo de cada tarefa (documentacao-tecnica.md) e o MR."""
+    import ambiente_revisao as amb
+    links = mr_links()
+    lines = [f"# Relatório de mudanças — {card['name']}", '', f"Card: {card['shortUrl']}", '']
+    for task, _, papel in tasks:
+        if papel != 'dev':
+            continue
+        folder = ROOT / 'tarefas' / task
+        docs = folder / 'documentacao-tecnica.md'
+        resumo = amb.section(docs.read_text(encoding='utf-8'), *amb.RESUMO) if docs.exists() else ''
+        spec = folder / 'task-spec.md'
+        heads = [l[2:].strip() for l in spec.read_text(encoding='utf-8').splitlines() if l.startswith('# ')] if spec.exists() else []
+        title = heads[0][:200] if heads else task
+        lines += [f'## {title}', f"`{task}`" + (f" · MR: {links[task]}" if task in links else ' · MR: ainda não aberto'), '',
+                  resumo or '_Ainda sem resumo (a documentação sai no fim do pipeline)._', '']
+    return '\n'.join(lines).rstrip() + '\n'
 
 
 def repo_label(manifest):
     repo = manifest.get('repo', '')
     if repo.startswith('erp-back'):
-        return 'repo::back-end'
+        return 'repo-back-end'
     if repo.startswith('erp-front'):
-        return 'repo::front-end'
+        return 'repo-front-end'
     if repo.startswith('transparencia'):
-        return 'repo::portal'
+        return 'repo-portal'
     return None
 
 
@@ -90,9 +169,12 @@ def labels_for(card, list_name, tasks):
     labels = {'fase::' + fase_of(list_name)}
     if plain(list_name).startswith('bugs'):
         labels.add('tipo::bug')
-    if tasks:
+    revisao = any(t[2] == 'revisao' for t in tasks)
+    dev = [] if revisao else [t for t in tasks if t[2] == 'dev']  # revisao ligada: tarefa dev so cita o card
+    labels.add('papel::revisao' if revisao else 'papel::dev')
+    if dev:
         labels.add('pipeline')
-    labels |= {lab for _, m in tasks if (lab := repo_label(m))}
+    labels |= {lab for _, m, _ in dev if (lab := repo_label(m))}
     return sorted(labels)
 
 
@@ -143,9 +225,10 @@ def sync(dry_run=False):
     state = runner.read(STATE) if STATE.exists() else {'cards': {}}
     me = trello_get('members/me', {'fields': 'id'})['id']
     lists = {l['id']: l['name'] for l in trello_get(f'boards/{board}/lists', {'fields': 'name', 'filter': 'all'})}
-    cards = trello_get(f'boards/{board}/cards/all', {'fields': 'name,desc,idList,idMembers,shortUrl,shortLink,closed',
+    cards = trello_get(f'boards/{board}/cards/all', {'fields': 'name,desc,idList,idMembers,shortUrl,shortLink,idShort,closed',
                                                       'checklists': 'all'})
     report = []
+    owners = declared_owners()
     for card in cards:
         if me not in (card.get('idMembers') or []):
             continue
@@ -156,8 +239,9 @@ def sync(dry_run=False):
             continue
         if not known and fase == 'concluido':
             continue  # so espelha concluido de quem ja estava aqui (fecha a issue)
-        tasks = tasks_for_card(card['shortLink'])
-        body = {'title': card['name'][:250], 'description': issue_body(card, list_name),
+        tasks, origem = tasks_for_card(card, owners)
+        revisao = any(t[2] == 'revisao' for t in tasks)
+        body = {'title': card['name'][:250], 'description': issue_body(card, list_name, revisao),
                 'labels': ','.join(labels_for(card, list_name, tasks))}
         digest = runner.digest(json.dumps(body, sort_keys=True).encode('utf-8'))
         entry = known or {'notes': {}}
@@ -176,7 +260,9 @@ def sync(dry_run=False):
             gitlab('PUT', f"projects/{pid}/issues/{entry['iid']}", {'state_event': want})
             entry['state_event'] = want
         entry['hash'] = digest
-        for task, _ in tasks:
+        for task, _, papel in tasks:
+            if revisao or papel != 'dev':
+                continue  # revisao de colega: parecer, HANDOFF e relatorio para o dev sao privados
             for name, title in DOCS:
                 path = ROOT / 'tarefas' / task / name
                 if not path.exists():
@@ -194,7 +280,32 @@ def sync(dry_run=False):
                     old['id'] = gitlab('POST', f"projects/{pid}/issues/{entry['iid']}/notes", note)['id']
                 old['hash'] = h
                 entry['notes'][note_key] = old
+                state['cards'][card['shortLink']] = entry
+                runner.save(STATE, state)  # nota a nota: falha no meio nao duplica na proxima rodada
                 report.append(('documento', entry['url'], note_key))
+        if origem and not revisao and not entry.get('origem_note'):
+            note = {'body': f'Assumido a partir da revisão `{origem}` (continuação da branch de outro dev). '
+                            'O parecer daquela revisão é privado e fica no pipeline.'}
+            entry['origem_note'] = gitlab('POST', f"projects/{pid}/issues/{entry['iid']}/notes", note)['id']
+            state['cards'][card['shortLink']] = entry
+            runner.save(STATE, state)
+            report.append(('origem', entry['url'], origem))
+        if not revisao and any(t[2] == 'dev' for t in tasks):
+            text = card_report(card, tasks)
+            out = ROOT / 'relatorios' / 'cards' / f"{card.get('idShort') or card['shortLink']}-{card['shortLink']}.md"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text, encoding='utf-8')
+            h = runner.digest(text.encode('utf-8'))
+            old = entry.get('relatorio') or {}
+            if old.get('hash') != h:
+                note = {'body': text}
+                if old.get('id'):
+                    gitlab('PUT', f"projects/{pid}/issues/{entry['iid']}/notes/{old['id']}", note)
+                else:
+                    old['id'] = gitlab('POST', f"projects/{pid}/issues/{entry['iid']}/notes", note)['id']
+                old['hash'] = h
+                entry['relatorio'] = old
+                report.append(('relatorio', entry['url'], str(out.relative_to(ROOT))))
         state['cards'][card['shortLink']] = entry
         runner.save(STATE, state)  # a cada card: falha no meio nao duplica issue
     state['last_sync'] = time.time()
@@ -210,8 +321,9 @@ def main(argv=None):
     p.add_argument('--dry-run', action='store_true')
     a = p.parse_args(argv)
     if a.se_passou:
-        if not KEY_FILE.exists():
-            return 0  # sem chave: o timer nao faz nada
+        # Chamada do timer: so com a chave E a ativacao explicita do dono ("gestao_sync": true em config/local.json).
+        if not KEY_FILE.exists() or runner.settings().get('gestao_sync') is not True:
+            return 0
         last = (runner.read(STATE).get('last_sync') or 0) if STATE.exists() else 0
         if time.time() - last < a.se_passou:
             return 0

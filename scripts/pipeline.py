@@ -1258,7 +1258,7 @@ def approve(task):
     return results[0] if len(results) == 1 else {'phase': 'entrega', 'tasks': results}
 
 
-def initialize(task, repo_name, source, base_ref, scope, checks, size='P', prototype=False, entrega=None):
+def initialize(task, repo_name, source, base_ref, scope, checks, size='P', prototype=False, entrega=None, card=None, origem=None):
     folder, local = task_paths(task)
     config = read(ROOT / 'config/pipeline.json')
     with lock(local):
@@ -1273,6 +1273,14 @@ def initialize(task, repo_name, source, base_ref, scope, checks, size='P', proto
                 if other.get('entrega') == entrega and bool(other.get('prototype')) != bool(prototype):
                     raise RuntimeError('Tarefas da mesma entrega devem ter o mesmo --prototype (gate unico)')
             manifest['entrega'] = entrega
+        # Card do Trello de que esta tarefa e dona (espelho no GitLab) e, se continuou o trabalho de outro dev,
+        # a tarefa de revisao de origem (ex.: mr-598-473-...). Ver scripts/trello_gitlab.py.
+        if card:
+            if not re.fullmatch(r'https://trello\.com/c/[A-Za-z0-9]+(/\S*)?', card):
+                raise ValueError('--card deve ser o link do card (https://trello.com/c/...)')
+            manifest['card'] = card
+        if origem:
+            manifest['origem'] = origem
         if not re.fullmatch(r'[a-zA-Z0-9_-]+', repo_name):
             raise ValueError('Use alias simples do repo em config/local.json')
         if any(Path(x).is_absolute() or '..' in Path(x).parts or not x.strip('./\\') for x in scope):
@@ -1333,6 +1341,8 @@ def main():
     init.add_argument('--check', action='append', required=True, help='argv JSON; aprovado junto ao plano')
     init.add_argument('--size', choices=['P', 'M', 'G'], default='P'); init.add_argument('--prototype', action='store_true')
     init.add_argument('--entrega', help='Agrupa tarefas aprovadas num unico gate (ex.: 3964)')
+    init.add_argument('--card', help='Link do card do Trello de que a tarefa e dona')
+    init.add_argument('--origem', help='Tarefa de revisao de onde o trabalho foi assumido (ex.: mr-598-473-x)')
     gate = sub.add_parser('gate', help='Somente leitura: hashes do gate pendente da tarefa/entrega'); gate.add_argument('target')
     for name in ('run', 'approve', 'status', 'recover'):
         q = sub.add_parser(name); q.add_argument('task')
@@ -1347,7 +1357,7 @@ def main():
     a = p.parse_args()
     try:
         if a.command == 'init':
-            result = initialize(a.task, a.repo, a.spec, a.base, a.scope, [json.loads(c) for c in a.check], a.size, a.prototype, a.entrega)
+            result = initialize(a.task, a.repo, a.spec, a.base, a.scope, [json.loads(c) for c in a.check], a.size, a.prototype, a.entrega, a.card, a.origem)
         elif a.command == 'gate':
             print(json.dumps(gate_status(a.target), ensure_ascii=False, indent=2))
             return 0

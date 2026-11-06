@@ -12,8 +12,8 @@ import trello_gitlab as tg  # noqa: E402
 LISTS = [{'id': 'l1', 'name': 'Em andamento'}, {'id': 'l2', 'name': 'Concluído'}, {'id': 'l3', 'name': 'Arquivo'}]
 
 
-def card(short, lista, members=('me',), name='Card'):
-    return {'name': name + ' ' + short, 'desc': 'Descricao', 'idList': lista, 'idMembers': list(members),
+def card(short, lista, members=('me',), name='Card', number=0):
+    return {'name': name + ' ' + short, 'idShort': number, 'desc': 'Descricao', 'idList': lista, 'idMembers': list(members),
             'shortUrl': 'https://trello.com/c/' + short, 'shortLink': short, 'closed': False, 'checklists': []}
 
 
@@ -27,6 +27,14 @@ class EspelhoTest(unittest.TestCase):
         (task / 'task-spec.md').write_text('# Spec\nCard https://trello.com/c/MEU1/x\n', encoding='utf-8')
         (task / 'task.json').write_text(json.dumps({'repo': 'erp-back-end'}), encoding='utf-8')
         (task / 'review-report.md').write_text('parecer privado', encoding='utf-8')
+        rev = root / 'tarefas' / 'mr-10-20-acl'
+        rev.mkdir()
+        (rev / 'HANDOFF.md').write_text('Revisao do card 3905 (MR de colega).', encoding='utf-8')
+        (rev / 'review-report.md').write_text('parecer da revisao privado', encoding='utf-8')
+        # Tarefa dev que so cita o numero do card de revisao (ex.: MR base): nao vira dev desse card.
+        cita = root / 'tarefas' / 'outra-dev'
+        cita.mkdir()
+        (cita / 'task-spec.md').write_text('Base: MR do card 3905.', encoding='utf-8')
         for target, value in ((tg, root), (tg.runner, root)):
             p = patch.object(target, 'ROOT', value)
             p.start()
@@ -38,8 +46,8 @@ class EspelhoTest(unittest.TestCase):
         p = patch.object(tg.runner, 'settings', return_value={'trello_board': 'B', 'gestao_project': 'g/gestao'})
         p.start()
         self.addCleanup(p.stop)
-        self.cards = [card('MEU1', 'l1'), card('OUTRO', 'l1', members=('alguem',)), card('VELHO', 'l2'),
-                      card('ARQ', 'l3')]
+        self.cards = [card('MEU1', 'l1', number=1111), card('OUTRO', 'l1', members=('alguem',)), card('VELHO', 'l2'),
+                      card('ARQ', 'l3'), card('REV1', 'l1', number=3905)]
         self.calls = []
 
         def trello(path, params=None):
@@ -64,13 +72,18 @@ class EspelhoTest(unittest.TestCase):
     def test_so_meus_cards_uma_issue_docs_sem_parecer_e_fecha_no_concluido(self):
         tg.sync()
         created = [c for c in self.calls if c[0] == 'POST' and c[1].endswith('/issues')]
-        self.assertEqual(len(created), 1)  # OUTRO nao e meu; VELHO concluido sem issue; ARQ arquivado
+        self.assertEqual(len(created), 2)  # OUTRO nao e meu; VELHO concluido sem issue; ARQ arquivado
         self.assertIn('<!-- trello:MEU1 -->', created[0][2]['description'])
-        self.assertEqual(created[0][2]['labels'], 'fase::andamento,pipeline,repo::back-end')
+        self.assertEqual(created[0][2]['labels'], 'fase::andamento,papel::dev,pipeline,repo-back-end')
+        self.assertEqual(created[1][2]['labels'], 'fase::andamento,papel::revisao')
+        self.assertIn('revisão de MR de colega', created[1][2]['description'])
         notes = [c[2]['body'] for c in self.calls if c[1].endswith('/notes')]
-        self.assertEqual(len(notes), 1)
+        self.assertEqual(len(notes), 2)  # a spec da tarefa e o relatorio de mudancas do card
         self.assertTrue(notes[0].startswith('### Spec'))
-        self.assertFalse(any('parecer privado' in json.dumps(c[2] or {}) for c in self.calls))
+        self.assertTrue(notes[1].startswith('# Relatório de mudanças'))
+        self.assertFalse(any(x in json.dumps(c[2] or {}, ensure_ascii=False)
+                             for x in ('parecer privado', 'parecer da revisao privado', 'Base: MR', 'Revisao do card')
+                             for c in self.calls))
         # Segunda rodada sem mudanca: nada novo.
         self.calls.clear()
         tg.sync()
@@ -80,6 +93,39 @@ class EspelhoTest(unittest.TestCase):
         tg.sync()
         self.assertIn(('PUT', 'projects/g%2Fgestao/issues/7', {'state_event': 'close'}), self.calls)
         self.assertFalse(any(c[0] == 'POST' and c[1].endswith('/issues') for c in self.calls))
+        self.assertEqual(sum(1 for c in self.calls if c[1].endswith('/issues/7') and c[2] == {'state_event': 'close'}), 1)
+
+    def test_card_declarado_vence_revisao_e_gera_relatorio_com_mr(self):
+        # Card que comecou como revisao (mr-*) e virou desenvolvimento do dono, declarado em gestao_cards.
+        root = tg.ROOT
+        (root / 'tarefas' / 'minha-back' / 'documentacao-tecnica.md').write_text(
+            '# Doc\n\n## Resumo\nNovo campo Data de Assinatura.\n\n## Roteiro de teste manual\n1. x\n', encoding='utf-8')
+        amb = root / '.local' / 'ambientes'
+        amb.mkdir(parents=True)
+        (amb / 'ent.json').write_text(json.dumps({'tarefas': [{'task': 'minha-back', 'mr': {'url': 'https://gl/mr/620'}}]}))
+        settings = {'trello_board': 'B', 'gestao_project': 'g/gestao',
+                    'gestao_cards': {'REV1': {'papel': 'dev', 'tarefas': ['minha-back'], 'origem': 'mr-10-20-acl'}}}
+        with patch.object(tg.runner, 'settings', return_value=settings):
+            tg.sync()
+        rev = [c for c in self.calls if c[0] == 'POST' and c[1].endswith('/issues') and 'REV1' in c[2]['title']][0]
+        self.assertEqual(rev[2]['labels'], 'fase::andamento,papel::dev,pipeline,repo-back-end')
+        bodies = [c[2]['body'] for c in self.calls if c[1].endswith('/notes')]
+        self.assertTrue(any('Assumido a partir da revisão `mr-10-20-acl`' in b for b in bodies))
+        relatorio = [b for b in bodies if b.startswith('# Relatório de mudanças')]
+        self.assertTrue(relatorio and 'Novo campo Data de Assinatura.' in relatorio[0] and 'https://gl/mr/620' in relatorio[0])
+        self.assertFalse(any('parecer da revisao privado' in json.dumps(c[2] or {}) for c in self.calls))
+        self.assertTrue((root / 'relatorios' / 'cards' / '3905-REV1.md').exists())
+        # MEU1 era da minha-back por link; agora a tarefa e declarada do REV1, entao MEU1 nao a leva junto.
+        meu = [c for c in self.calls if c[0] == 'POST' and c[1].endswith('/issues') and 'MEU1' in c[2]['title']][0]
+        self.assertEqual(meu[2]['labels'], 'fase::andamento,papel::dev')
+
+    def test_card_no_task_json_declara_dono(self):
+        root = tg.ROOT
+        (root / 'tarefas' / 'outra-dev' / 'task.json').write_text(
+            json.dumps({'repo': 'erp-front-end', 'card': 'https://trello.com/c/REV1/3905-x', 'origem': 'mr-10-20-acl'}))
+        tasks, origem = tg.tasks_for_card({'shortLink': 'REV1', 'idShort': 3905})
+        self.assertEqual([(t, p) for t, _, p in tasks], [('outra-dev', 'dev')])
+        self.assertEqual(origem, 'mr-10-20-acl')
 
 
 if __name__ == '__main__':

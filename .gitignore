@@ -1,6 +1,6 @@
-/.local/
-/config/local.json
-/__pycache__/
+.local/
+config/local.json
+__pycache__/
 *.pyc
 *.log
 *.sql
@@ -9,5 +9,17 @@
 .env
 .env.*
 !.env.example
+.ambientes.json
+.jules-sessions.json
+.HANDOFF.bak
+dashboard.html
+tarefas/**/prints/
+tarefas/**/prints-final/
+tarefas/**/runs/
+tarefas/**/aprovacoes/
+tarefas/**/estado.json
+tarefas/**/state.json
+config/*secret*
+tarefas/**/stub-api.js
 node_modules/
 vendor/

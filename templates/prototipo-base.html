@@ -1,0 +1,203 @@
+<!-- SCAFFOLD DE PROTÓTIPO — copie para tarefas/<id>/prototipo/index.html e troque o conteúdo.
+     Arquivo único, sem dependência: abre com duplo clique.
+     Layout e estados espelham o ERP real (Vuexy + componentes System*).
+     Conteúdo semeado com "Documentos Gerados" apenas como exemplo. -->
+<meta charset="utf-8">
+<title>Protótipo — {Nome da Tela}</title>
+<style>
+  :root{ --azul:#1a1f5c; --primaria:#7367f0; --verde:#28c76f; --vermelho:#ea5455; --laranja:#ff9f43;
+         --texto:#5e5873; --suave:#6e6b7b; --borda:#ebe9f1; --fundo:#f8f8f8; }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 Montserrat,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--fundo);color:var(--texto)}
+  .aviso{background:var(--laranja);color:#fff;padding:9px 16px;font-weight:700;font-size:13px}
+  .app{display:flex;min-height:calc(100vh - 38px)}
+  /* ---- sidebar (espelha o menu real) ---- */
+  .lateral{width:240px;background:#fff;border-right:1px solid var(--borda);padding:14px 0;flex-shrink:0}
+  .marca{font-weight:700;color:var(--azul);padding:0 18px 14px;font-size:17px}
+  .lateral a{display:block;padding:9px 18px;color:var(--suave);text-decoration:none;font-size:13px}
+  .lateral a.ativo{background:linear-gradient(118deg,var(--primaria),rgba(115,103,240,.7));color:#fff;
+    margin:0 12px;border-radius:4px;box-shadow:0 0 6px 1px rgba(115,103,240,.6)}
+  .lateral .grupo{padding:14px 18px 6px;font-size:11px;text-transform:uppercase;color:#b9b9c3;letter-spacing:.4px}
+  /* ---- conteúdo ---- */
+  .principal{flex:1;display:flex;flex-direction:column}
+  .topo{background:#fff;border-bottom:1px solid var(--borda);padding:12px 22px;display:flex;justify-content:flex-end;
+        align-items:center;gap:10px}
+  .avatar{width:34px;height:34px;border-radius:50%;background:var(--primaria);color:#fff;display:grid;place-items:center;font-size:12px}
+  .estados{background:#fff;border-bottom:1px solid var(--borda);padding:9px 22px;display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .estados button{border:1px solid var(--borda);background:#fff;padding:5px 11px;border-radius:4px;cursor:pointer;
+                  color:var(--suave);font-size:12.5px}
+  .estados button.on{background:var(--primaria);color:#fff;border-color:var(--primaria)}
+  .area{padding:22px;flex:1}
+  .cabecalho{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:12px;flex-wrap:wrap}
+  .cabecalho h2{margin:0;font-size:19px;color:var(--texto);font-weight:600}
+  .busca{padding:7px 11px;border:1px solid #d8d6de;border-radius:5px;min-width:230px}
+  .btn{background:var(--verde);color:#fff;border:0;padding:8px 15px;border-radius:5px;cursor:pointer;font-size:13px}
+  .btn.primaria{background:var(--primaria)} .btn.neutra{background:#82868b}
+  .card{background:#fff;border-radius:6px;box-shadow:0 4px 24px 0 rgba(34,41,47,.1);padding:18px;margin-bottom:14px;max-width:600px}
+  .card h3{margin:0 0 9px;font-size:16px;color:var(--texto)}
+  .card p{margin:2px 0;font-size:13px;color:var(--suave)}
+  .card b{color:var(--texto);font-weight:600}
+  .acoes{display:flex;gap:8px;margin-top:13px}
+  .acoes a{flex:1;text-align:center;padding:8px;border-radius:5px;text-decoration:none;font-size:13px}
+  .ver{background:var(--azul);color:#fff}
+  .baixar{background:#fff;color:var(--primaria);border:1px solid var(--primaria)}
+  .vazio{background:#fff;border-radius:6px;box-shadow:0 4px 24px 0 rgba(34,41,47,.1);padding:52px 24px;text-align:center}
+  .vazio .icone{font-size:44px;display:block;margin-bottom:14px;opacity:.45}
+  .vazio h3{margin:0 0 6px;font-size:17px;color:var(--texto)}
+  .vazio p{color:var(--suave);margin:0 0 16px}
+  /* ---- sem permissão: espelha pages/NotAuthorized.jsx ---- */
+  .misc{background:#fff;min-height:420px;display:grid;place-items:center;text-align:center;padding:36px;border-radius:6px}
+  .misc h2{margin:0 0 8px;font-size:22px;color:var(--texto)}
+  .misc p{color:var(--suave);margin:0 0 18px}
+  .ilustra{font-size:76px;margin-top:22px;opacity:.75}
+  /* ---- toast: o BaseApi notifica erro assim ---- */
+  .toast{position:fixed;top:66px;right:22px;background:#fff;border-left:4px solid var(--vermelho);
+         box-shadow:0 4px 24px rgba(34,41,47,.18);border-radius:6px;padding:13px 17px;max-width:330px}
+  .toast b{display:block;color:var(--vermelho);margin-bottom:3px;font-size:14px}
+  .toast span{font-size:13px;color:var(--suave)}
+  .esqueleto{background:#fff;border-radius:6px;box-shadow:0 4px 24px 0 rgba(34,41,47,.1);padding:18px;margin-bottom:14px;max-width:600px}
+  .linha{height:12px;background:#f0f0f4;border-radius:4px;margin:9px 0;animation:pulsar 1.3s ease-in-out infinite}
+  @keyframes pulsar{0%,100%{opacity:1}50%{opacity:.45}}
+  .oculto{display:none}
+  .nota{margin-top:26px;padding:13px 17px;background:#f3f2ff;border-left:4px solid var(--primaria);font-size:13px;border-radius:4px}
+  .nota code{background:#fff;padding:1px 5px;border-radius:3px;font-size:12px}
+</style>
+
+<div class="aviso">PROTÓTIPO — não é o sistema. Serve para criticar antes de implementar.</div>
+
+<div class="app">
+  <nav class="lateral">
+    <div class="marca">JUCESE</div>
+    <div class="grupo">Integração e Documentos</div>
+    <a href="#">Templates</a>
+    <a href="#" class="ativo">Documentos Gerados</a>
+    <div class="grupo">Outros módulos</div>
+    <a href="#">Gestão de Projetos</a>
+    <a href="#">Recursos Humanos</a>
+  </nav>
+
+  <div class="principal">
+    <header class="topo">
+      <div style="text-align:right;line-height:1.2">
+        <div style="font-weight:600;font-size:13px">FULANO DE TAL</div>
+        <div style="font-size:11.5px;color:var(--suave)">usuario@exemplo.gov.br</div>
+      </div>
+      <div class="avatar">AJ</div>
+    </header>
+
+    <div class="estados">
+      <strong style="font-size:12.5px;margin-right:4px">Estado:</strong>
+      <button class="on" onclick="ver('dados',this)">Com dados</button>
+      <button onclick="ver('carregando',this)">Carregando</button>
+      <button onclick="ver('vazio',this)">Vazio (sem dados)</button>
+      <button onclick="ver('filtro',this)">Filtro sem resultado</button>
+      <button onclick="ver('erro',this)">Erro (toast)</button>
+      <button onclick="ver('semperm',this)">Sem permissão</button>
+    </div>
+
+    <div class="area">
+      <!-- COM DADOS -->
+      <div id="dados">
+        <div class="cabecalho">
+          <h2>Documentos Gerados</h2>
+          <div style="display:flex;gap:9px"><input class="busca" placeholder="Procurar..."><button class="btn">+ Gerar documento</button></div>
+        </div>
+        <div class="card">
+          <h3>Declaracao_Vinculo_Funcional</h3>
+          <p><b>Criado por:</b> Fulano de Tal</p>
+          <p><b>Preenchido em:</b> 12/09/2026</p>
+          <p><b>Template base:</b> Declaração de Vínculo</p>
+          <div class="acoes"><a class="ver" href="#">Visualizar arquivo</a><a class="baixar" href="#">Baixar</a></div>
+        </div>
+        <div class="card">
+          <h3>Oficio_Circular_034</h3>
+          <p><b>Criado por:</b> Maria Helena Santos</p>
+          <p><b>Preenchido em:</b> 08/09/2026</p>
+          <p><b>Template base:</b> Ofício Circular</p>
+          <div class="acoes"><a class="ver" href="#">Visualizar arquivo</a><a class="baixar" href="#">Baixar</a></div>
+        </div>
+      </div>
+
+      <!-- CARREGANDO -->
+      <div id="carregando" class="oculto">
+        <div class="cabecalho"><h2>Documentos Gerados</h2></div>
+        <div class="esqueleto"><div class="linha" style="width:42%"></div><div class="linha" style="width:66%"></div><div class="linha" style="width:54%"></div></div>
+        <div class="esqueleto"><div class="linha" style="width:38%"></div><div class="linha" style="width:60%"></div><div class="linha" style="width:50%"></div></div>
+      </div>
+
+      <!-- VAZIO -->
+      <div id="vazio" class="oculto">
+        <div class="cabecalho">
+          <h2>Documentos Gerados</h2>
+          <div style="display:flex;gap:9px"><input class="busca" placeholder="Procurar..."><button class="btn">+ Gerar documento</button></div>
+        </div>
+        <div class="vazio">
+          <span class="icone">📄</span>
+          <h3>Nenhum documento gerado ainda</h3>
+          <p>Gere o primeiro documento a partir de um template do seu setor.</p>
+          <button class="btn">+ Gerar documento</button>
+        </div>
+      </div>
+
+      <!-- FILTRO SEM RESULTADO -->
+      <div id="filtro" class="oculto">
+        <div class="cabecalho">
+          <h2>Documentos Gerados</h2>
+          <div style="display:flex;gap:9px"><input class="busca" value="contrato 2029"><button class="btn">+ Gerar documento</button></div>
+        </div>
+        <div class="vazio">
+          <span class="icone">🔍</span>
+          <h3>Nenhum resultado para “contrato 2029”</h3>
+          <p>Existem documentos cadastrados, mas nenhum corresponde à busca.</p>
+          <button class="btn neutra">Limpar busca</button>
+        </div>
+      </div>
+
+      <!-- ERRO: toast, que é como o BaseApi notifica -->
+      <div id="erro" class="oculto">
+        <div class="cabecalho"><h2>Documentos Gerados</h2></div>
+        <div class="vazio">
+          <span class="icone">⚠️</span>
+          <h3>Não foi possível carregar os documentos</h3>
+          <p>Tente novamente em instantes.</p>
+          <button class="btn primaria">Tentar novamente</button>
+        </div>
+        <div class="toast"><b>Erro</b><span>Falha ao buscar documentos gerados.</span></div>
+      </div>
+
+      <!-- SEM PERMISSÃO: espelha pages/NotAuthorized.jsx -->
+      <div id="semperm" class="oculto">
+        <div class="misc">
+          <div>
+            <h2>Sem permissão! 🔐</h2>
+            <p>O usuário não possui autorização para acessar este recurso</p>
+            <button class="btn primaria">Voltar ao inicio</button>
+            <div class="ilustra">🔒</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="nota">
+        <b>Componentes existentes a reutilizar na implementação:</b>
+        busca e filtros com <code>SystemInput</code> / <code>SystemMultiSelect</code>;
+        booleano/status com <code>SystemSwitchInput</code> e <code>&lt;Badge pill&gt;</code>;
+        listagem em tabela, quando for o caso, com <code>SystemDataTablePaginated</code>.
+        <b>Sem permissão</b> reaproveita <code>pages/NotAuthorized.jsx</code>; o <b>erro de carregamento</b>
+        já vem por toast do <code>BaseApi</code> — não criar painel de erro novo.
+        <br><br>
+        <b>Decisões a confirmar:</b> o vazio distingue “não há nada” de “o filtro não achou nada”?
+        A ação <i>Baixar</i> entra no card (hoje só existe <i>Visualizar</i>)?
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function ver(id, botao){
+    ['dados','carregando','vazio','filtro','erro','semperm'].forEach(function(e){
+      document.getElementById(e).classList.toggle('oculto', e !== id);
+    });
+    document.querySelectorAll('.estados button').forEach(function(b){ b.classList.remove('on'); });
+    botao.classList.add('on');
+  }
+</script>

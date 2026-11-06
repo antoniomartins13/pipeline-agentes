@@ -1,0 +1,9 @@
+[Unit]
+Description=Pipeline de agentes: roda sozinho as tarefas que andam sem o dono
+
+[Service]
+Type=oneshot
+WorkingDirectory=@WORKSPACE@
+Environment=PATH=@PATH@
+Environment=HOME=%h
+ExecStart=@PIPELINE@/scripts/auto.sh

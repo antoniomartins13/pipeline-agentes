@@ -1,0 +1,17 @@
+[Unit]
+Description=Console do pipeline (claude interativo em tmux, sem janela): recebe os botoes do Habblaud
+After=default.target
+
+[Service]
+Type=forking
+WorkingDirectory=@WORKSPACE@
+Environment=PATH=@PATH@
+Environment=HOME=%h
+Environment=HABBLAUD_CONSOLE_SILENT=1
+ExecStart=@TMUX@ new-session -d -s habblaud-console -c @WORKSPACE@ @PIPELINE@/scripts/console.sh
+ExecStop=@TMUX@ kill-session -t habblaud-console
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

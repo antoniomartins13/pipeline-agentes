@@ -1,0 +1,9 @@
+[Unit]
+Description=Pipeline de agentes a cada 3 minutos
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=3min
+
+[Install]
+WantedBy=timers.target

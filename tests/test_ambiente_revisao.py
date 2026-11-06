@@ -1,0 +1,96 @@
+"""Ambiente de revisao (scripts/ambiente_revisao.py): partes que nao tocam git, GitLab nem servidores."""
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+os.environ["PIPELINE_SEM_AMBIENTE"] = "1"  # nunca abrir MR/servidor de verdade nos testes
+import ambiente_revisao as amb
+
+DOC = """# Documentacao tecnica
+
+## Resumo
+Publicacao em lote de pagamentos e cargo nas diarias.
+
+## Detalhes
+Achado interno que nao vai para o MR.
+
+## Roteiro de teste manual
+1. Abrir Pagamentos.
+2. Publicar dois em lote.
+"""
+
+
+class AmbienteTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        for name, data in {'a-back': {'entrega': 'ent'}, 'a-front': {'entrega': 'ent'}, 'solo': {}}.items():
+            (self.root / 'tarefas' / name).mkdir(parents=True)
+            (self.root / 'tarefas' / name / 'task.json').write_text(json.dumps(data), encoding='utf-8')
+            (self.root / 'tarefas' / name / 'task-spec.md').write_text(
+                '# [TRELLO-1] Titulo da ' + name + '\nCard https://trello.com/c/AbC123/1-x\n', encoding='utf-8')
+        (self.root / 'tarefas' / 'a-back' / 'documentacao-tecnica.md').write_text(DOC, encoding='utf-8')
+        for target in (amb, amb.runner):
+            p = patch.object(target, 'ROOT', self.root)
+            p.start()
+            self.addCleanup(p.stop)
+        p = patch.object(amb, 'STATE_DIR', self.root / '.local' / 'ambientes')
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_membros_da_entrega_ou_a_propria_tarefa(self):
+        self.assertEqual(amb.members('ent'), ['a-back', 'a-front'])
+        self.assertEqual(amb.members('solo'), ['solo'])
+        with self.assertRaises(ValueError):
+            amb.members('nao-existe')
+
+    def test_descricao_do_mr_so_tem_resumo_e_card(self):
+        desc = amb.mr_description('a-back')
+        self.assertIn('Publicacao em lote', desc)
+        self.assertIn('https://trello.com/c/AbC123/1-x', desc)
+        self.assertNotIn('Achado interno', desc)
+        self.assertNotIn('Abrir Pagamentos', desc)
+        self.assertEqual(amb.spec_title('a-back'), '[TRELLO-1] Titulo da a-back')
+
+    def test_secao_do_roteiro(self):
+        self.assertEqual(amb.section(DOC, 'Roteiro de teste manual'), '1. Abrir Pagamentos.\n2. Publicar dois em lote.')
+        self.assertEqual(amb.section(DOC, 'Inexistente'), '')
+
+    def test_portas_fixas_por_alvo_e_devolvidas_ao_encerrar(self):
+        a = amb.ports_for('ent')
+        self.assertEqual(amb.ports_for('ent'), a)
+        b = amb.ports_for('solo')
+        self.assertNotEqual(a['back'], b['back'])
+        self.assertEqual(a['back'], (amb.PORT_BASE + 10, amb.PORT_BASE + 15))
+        amb.free_ports('ent')
+        self.assertEqual(amb.ports_for('outro'), a)  # bloco liberado volta
+
+    def test_so_prepara_com_todas_as_tarefas_prontas(self):
+        local = self.root / '.local' / 'tasks'
+        for t, phase in (('a-back', 'ready_for_draft'), ('a-front', 'review')):
+            (local / t).mkdir(parents=True)
+            (local / t / 'state.json').write_text(json.dumps({'phase': phase}), encoding='utf-8')
+        self.assertEqual(amb.preparar('ent'), {'alvo': 'ent', 'aguardando': ['a-front']})
+        with self.assertRaises(ValueError):
+            amb.preparar('../etc')
+
+    def test_tipo_do_projeto(self):
+        repo = self.root / 'repo'
+        repo.mkdir()
+        self.assertIsNone(amb.kind_of(repo))
+        (repo / 'package.json').write_text(json.dumps({'dependencies': {'next': '16'}}), encoding='utf-8')
+        self.assertEqual(amb.kind_of(repo), 'portal')
+        (repo / 'package.json').write_text(json.dumps({'devDependencies': {'vite': '7'}}), encoding='utf-8')
+        self.assertEqual(amb.kind_of(repo), 'front')
+        (repo / 'artisan').write_text('', encoding='utf-8')
+        self.assertEqual(amb.kind_of(repo), 'back')
+
+
+if __name__ == '__main__':
+    unittest.main()

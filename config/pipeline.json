@@ -2,8 +2,15 @@
   "schema_version": 1,
   "context": {"warn_tokens": 150000, "transition_tokens": 250000},
   "max_slices_per_run": 6,
-  "max_rounds": 3,
+  "max_rounds": 5,
   "timeout_seconds": 1800,
-  "providers": {"plan": "claude", "dev": "codex", "review": "claude", "docs": "codex"},
-  "notes": "Preferencias experimentais, nao ranking de capacidade. Revisor independente; sem fallback automatico por quota."
+  "providers": {"plan": "claude", "dev": "agy", "review": "claude", "docs": "agy"},
+  "agy_model": "gemini-4-argon-high",
+  "fallback": {
+    "chain": ["claude", "agy:claude-opus-5-5-high", "agy:gemini-4-argon-high", "agy:gemini-3.8-flash-high"],
+    "claude_usage_file": "~/.habblaud/usage/.claude.json",
+    "claude_threshold": 85,
+    "exhausted_hours": 5
+  },
+  "notes": "Preferencias experimentais, nao ranking de capacidade. Codex fora desde 03/11/2026 (assinatura nao renovada); agy = Antigravity CLI (Gemini). Fallback automatico por quota desde 03/11/2026 (decisao do dono): cada fase comeca no provedor do manifesto e segue fallback.chain quando ele esta esgotado (Claude: five_hour >= claude_threshold no arquivo de uso do Habblaud; qualquer um: erro de cota). A revisao pode cair para qualquer candidato, inclusive da mesma familia do dev (decisao do dono). Ver invoke_fallback em scripts/pipeline.py."
 }

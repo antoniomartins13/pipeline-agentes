@@ -186,6 +186,23 @@ def repository(manifest):
     return (ROOT / path).resolve() if not path.is_absolute() else path.resolve()
 
 
+def entrega_siblings(task):
+    """(tarefa, worktree) das outras tarefas da mesma entrega. Leitura nas fases sem escrita e no prompt:
+    o revisor confere o contrato entre os repos (linker). Calculado na hora: task.json (CP1) nao muda."""
+    path = ROOT / 'tarefas' / task / 'task.json'
+    entrega = read(path).get('entrega') if path.exists() else None
+    if not entrega:
+        return []
+    found = []
+    for other in sorted((ROOT / 'tarefas').glob('*/task.json')):
+        if other.parent.name == task:
+            continue
+        manifest = read(other)
+        if manifest.get('entrega') == entrega and manifest.get('repo'):
+            found.append((other.parent.name, repository(manifest)))
+    return found
+
+
 def fingerprint(repo):
     """HEAD + tracked modifications + untracked file content; no .env is printed."""
     h = hashlib.sha256(git(repo, 'rev-parse', 'HEAD').encode())
@@ -321,6 +338,8 @@ def invoke(provider, prompt, repo, run, phase, config):
             for extra in (read(manifest_path).get('read_dirs', []) if manifest_path.exists() else []):
                 args.append(str(repository({'repo': extra}) if re.fullmatch(r'[a-zA-Z0-9_-]+', extra)
                                 else (ROOT / extra).resolve()))
+            for _, sibling in entrega_siblings(run.parent.name):
+                args.append(str(sibling))
         # Do not grant a dev additional writable directories. Its short task
         # context is carried by the prompt; read denials remain explicit failures.
     elif provider == 'codex':
@@ -359,6 +378,7 @@ def invoke(provider, prompt, repo, run, phase, config):
         for item in (read(manifest_path).get('read_dirs', []) if manifest_path.exists() else []):
             extra.append(repository({'repo': item}) if re.fullmatch(r'[a-zA-Z0-9_-]+', item)
                          else (ROOT / item).resolve())
+        extra += [sibling for _, sibling in entrega_siblings(run.parent.name)]
         allow = ['command(' + c + ')' for c in AGY_READ_COMMANDS]
         if phase == 'dev':
             # O prompt aponta para diff.patch (runs) e plano/spec (tarefas), fora do worktree.
@@ -548,6 +568,24 @@ def recovered_failure(task, tail=6000, max_logs=3):
     return '\n\n'.join(parts)
 
 
+def linker_prompt(task, phase):
+    """Tarefas irmas da entrega: todas as fases mantem o contrato; a revisao confere (enxerto "linker", 06/11/2026)."""
+    siblings = entrega_siblings(task)
+    if not siblings or phase not in ('plan', 'dev', 'review'):
+        return ''
+    where = '; '.join(f'{name}: {repo}' for name, repo in siblings)
+    text = ('Tarefas irmas desta entrega (outros repositorios, somente leitura): ' + where + '. '
+            'O contrato entre elas (rotas, metodos, nomes e tipos de campos, filtros, ordenacao, formato da resposta, '
+            'permissoes) tem de bater dos dois lados.')
+    if phase == 'review':
+        text += (' Na revisao, faca tambem a conferencia de contrato (linker): para cada chamada que este repositorio faz '
+                 'ao irmao ou recebe dele, compare o que o front envia (params, payload, nomes) com o que o back valida e '
+                 'filtra (rota, FormRequest/validacao, repositorio) e o que o back devolve (Resource/JSON) com o que a tela '
+                 'le. Leia os arquivos do irmao direto pelo caminho acima. Divergencia que quebra no primeiro uso '
+                 '(campo com outro nome, filtro ignorado, rota/metodo diferente, permissao diferente) e finding bloqueante.')
+    return text
+
+
 def build_prompt(folder, manifest, state, config):
     phase = state['phase']
     task = (folder / 'task-spec.md').read_text(encoding='utf-8')
@@ -563,6 +601,7 @@ def build_prompt(folder, manifest, state, config):
         'Evidencia de validacao do runner:\n' + json.dumps(state.get('validation', {}), ensure_ascii=False),
         (auto_failure(state) or recovered_failure(folder.name)) if phase == 'dev' else '',
         decisoes_humanas(folder),
+        linker_prompt(folder.name, phase),
         'Documento parcial da fase anterior (se existir): ' + str(folder / (phase + '-partial.md')),
         'Plano: ' + str(folder / 'plan.md') + '. Ler quando existir e for pertinente. Findings: ' + str(folder / 'review-report.md'),
         'Fases plan/docs/review/prototype sao somente leitura do codigo; entregue documento completo no campo document. '

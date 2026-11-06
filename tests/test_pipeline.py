@@ -82,6 +82,21 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(len(validation), 1)
         self.assertEqual(runner.read(validation[0])['tests'][0]['exit_code'], 0)
 
+    def test_linker_entrega_siblings_in_prompt_without_touching_manifest(self):
+        # Tarefa irma na mesma entrega: a revisao recebe o caminho dela e a conferencia de contrato.
+        manifest = runner.read(self.folder / 'task.json')
+        runner.save(self.folder / 'task.json', {**manifest, 'entrega': 'func'})
+        irma = self.root / 'tarefas' / 'irma'
+        irma.mkdir(parents=True)
+        runner.save(irma / 'task.json', {'repo': 'demo', 'entrega': 'func'})
+        self.assertEqual(runner.entrega_siblings('demo'), [('irma', self.repo.resolve())])
+        review = runner.linker_prompt('demo', 'review')
+        self.assertIn(str(self.repo.resolve()), review)
+        self.assertIn('linker', review)
+        self.assertNotIn('linker', runner.linker_prompt('demo', 'dev'))
+        self.assertEqual(runner.linker_prompt('demo', 'docs'), '')
+        self.assertEqual(runner.linker_prompt('irma-sem-entrega', 'review'), '')
+
     def test_approval_invalidated_by_spec_change_not_plan(self):
         self.plan_and_gate()
         (self.folder / 'plan.md').write_text('Plano gerado pelo runner nao invalida CP1', encoding='utf-8')

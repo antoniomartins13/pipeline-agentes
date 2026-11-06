@@ -9,3 +9,5 @@ Entregue tarefas/<id>/review-report.md ao dono, sem publicar no MR/card. Para co
 O runner v2 cobre ciclos de implementação e correção cadastrados. Revisão avulsa de MR permanece uma sessão independente com handoff; não é automaticamente convertida em desenvolvimento.
 
 A entrega inclui sempre o roteiro de teste manual (fluxo, edge cases, regressão em código compartilhado e pré-condições), conforme papeis/review.md.
+
+Toda revisão de MR de colega (pasta `tarefas/mr-*`) entrega também `roteiro.md`: passos numerados do ponto de vista de quem usa a tela (menu, o que preencher, o que deve aparecer), mais os pontos da revisão a conferir na tela. É o que o ambiente de teste (`ambiente_revisao.py revisao <pasta>`, automático quando o card entra em "Em Fase de Teste") mostra no roteiro. Nada do parecer vai para o MR ou para o card.

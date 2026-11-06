@@ -7,6 +7,7 @@
   e NADA anexado; desenvolvimento do dono ganha papel::dev e a issue ganha a label pipeline e repo-*, e uma nota por documento
   (task-spec.md, plan.md, documentacao-tecnica.md), atualizada quando o arquivo muda. O parecer da revisao
   (review-report.md) e privado e NUNCA vai.
+- Revisao em "Em Fase de Teste": sobe servidor e roteiro (ambiente_revisao.py revisao); saiu da coluna, derruba.
 - Nunca apaga issue nem nota; nunca escreve no Trello.
 
 Config (config/local.json): "trello_board" (shortLink do board), "gestao_project" (caminho no GitLab),
@@ -138,7 +139,7 @@ def review_mrs(task, cache):
     numbers = sorted(from_name | set(re.findall(r'!(\d{2,4})\b', text)), key=int)
     key = ','.join(numbers)
     hit = cache.get(task) or {}
-    if hit.get('key') == key and time.time() - hit.get('at', 0) < 3600:
+    if hit.get('key') == key and time.time() - hit.get('at', 0) < 3600 and all('branch' in m for m in hit['mrs']):
         return hit['mrs']
     found = []
     for number in numbers:
@@ -161,7 +162,7 @@ def review_mrs(task, cache):
     order = [project.rsplit('/', 1)[-1] for project in projects]
     keep.sort(key=lambda mr: (mr['estado'] != 'aberto', order.index(mr['repo']), -mr['iid']))
     # MR fechado (substituido por um consolidado, desistido) nao e o que revisar: so abertos e mergeados.
-    mrs = [{k: mr[k] for k in ('repo', 'iid', 'url', 'estado')} for mr in keep if mr['estado'] != 'fechado']
+    mrs = [{k: mr[k] for k in ('repo', 'iid', 'url', 'estado', 'branch')} for mr in keep if mr['estado'] != 'fechado']
     cache[task] = {'key': key, 'at': time.time(), 'mrs': mrs}
     return mrs
 
@@ -211,6 +212,28 @@ def repo_label(manifest):
     return None
 
 
+# Fase do runner nas issues de desenvolvimento (independe da lista do Trello): CORRIGIR volta a tarefa para dev e a
+# issue mostra pipeline::dev mesmo com o card parado em "Em Fase de Teste". Varias tarefas: vale a mais atrasada,
+# e qualquer bloqueio aparece.
+PIPELINE_FASE = {'awaiting_CP0': 'aguardando-cp1', 'awaiting_CP1': 'aguardando-cp1', 'awaiting_PROTOTIPO': 'aguardando-cp1',
+                 'plan': 'dev', 'prototype': 'dev', 'dev': 'dev', 'validate': 'dev', 'review': 'revisao', 'docs': 'docs',
+                 'ready_for_draft': 'pronto', 'closed': 'concluido', 'blocked': 'bloqueado'}
+PIPELINE_ORDEM = ('aguardando-cp1', 'dev', 'revisao', 'docs', 'pronto', 'concluido')
+
+
+def pipeline_fase(tasks):
+    fases = []
+    for task, _, papel in tasks:
+        path = ROOT / '.local' / 'tasks' / task / 'state.json'
+        if papel == 'dev' and path.exists():
+            fases.append(PIPELINE_FASE.get(runner.read(path).get('phase'), 'dev'))
+    if not fases:
+        return None
+    if 'bloqueado' in fases:
+        return 'bloqueado'
+    return min(fases, key=PIPELINE_ORDEM.index)
+
+
 def labels_for(card, list_name, tasks, mrs=()):
     labels = {'fase::' + fase_of(list_name)}
     if plain(list_name).startswith('bugs'):
@@ -220,6 +243,9 @@ def labels_for(card, list_name, tasks, mrs=()):
     labels.add('papel::revisao' if revisao else 'papel::dev')
     if dev:
         labels.add('pipeline')
+        fase_pipeline = pipeline_fase(dev)
+        if fase_pipeline:
+            labels.add('pipeline::' + fase_pipeline)
     labels |= {lab for _, m, _ in dev if (lab := repo_label(m))}
     labels |= {'repo-' + ('portal' if m['repo'] == 'transparencia' else m['repo']) for m in mrs}
     return sorted(labels)
@@ -261,6 +287,35 @@ def gitlab(method, path, body=None):
     if out.returncode:
         raise RuntimeError(f'GitLab {method} {path}: ' + (out.stderr or out.stdout).strip()[-300:])
     return json.loads(out.stdout or 'null')
+
+
+def mem_available_mb():
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            if line.startswith('MemAvailable:'):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+AMBIENTE_MIN_MB = 3072
+
+
+def ambiente_teste(task, em_teste):
+    """Revisao em "Em Fase de Teste" tem servidor e roteiro (decisao do dono, 06/11/2026); saiu da coluna, derruba.
+    Roda o ambiente_revisao.py em segundo plano (fetch, migrations e servidores demoram)."""
+    state_path = ROOT / '.local' / 'ambientes' / (task + '.json')
+    ambiente = runner.read(state_path) if state_path.exists() else {}
+    no_ar = bool(ambiente) and not ambiente.get('encerrado_em')
+    if em_teste == no_ar:
+        return None
+    if em_teste and mem_available_mb() < AMBIENTE_MIN_MB:
+        return ('ambiente adiado (memoria)', task)
+    log = open(ROOT / '.local' / 'ambientes' / (task + '.log'), 'a', encoding='utf-8')
+    subprocess.Popen([sys.executable, str(ROOT / 'scripts' / 'ambiente_revisao.py'), 'revisao' if em_teste else 'encerrar', task],
+                     stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True, cwd=str(ROOT))
+    return ('ambiente ' + ('subindo' if em_teste else 'encerrado'), task)
 
 
 def sync(dry_run=False):
@@ -336,6 +391,14 @@ def sync(dry_run=False):
                 state['cards'][card['shortLink']] = entry
                 runner.save(STATE, state)  # nota a nota: falha no meio nao duplica na proxima rodada
                 report.append(('documento', entry['url'], note_key))
+        if revisao and not dry_run:
+            (ROOT / '.local' / 'ambientes').mkdir(parents=True, exist_ok=True)
+            for task, _, papel in tasks:
+                if papel == 'revisao' and task.startswith('mr-'):
+                    acao = ambiente_teste(task, fase == 'teste')
+                    if acao:
+                        report.append(acao)
+                    break
         if origem and not revisao and not entry.get('origem_note'):
             note = {'body': f'Assumido a partir da revisão `{origem}` (continuação da branch de outro dev). '
                             'O parecer daquela revisão é privado e fica no pipeline.'}

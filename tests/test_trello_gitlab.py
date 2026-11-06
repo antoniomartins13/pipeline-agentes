@@ -27,6 +27,8 @@ class EspelhoTest(unittest.TestCase):
         (task / 'task-spec.md').write_text('# Spec\nCard https://trello.com/c/MEU1/x\n', encoding='utf-8')
         (task / 'task.json').write_text(json.dumps({'repo': 'erp-back-end'}), encoding='utf-8')
         (task / 'review-report.md').write_text('parecer privado', encoding='utf-8')
+        (root / '.local' / 'tasks' / 'minha-back').mkdir(parents=True)
+        (root / '.local' / 'tasks' / 'minha-back' / 'state.json').write_text(json.dumps({'phase': 'dev'}), encoding='utf-8')
         rev = root / 'tarefas' / 'mr-10-20-acl'
         rev.mkdir()
         (rev / 'HANDOFF.md').write_text('Revisao do card 3905 (MR de colega).', encoding='utf-8')
@@ -64,6 +66,9 @@ class EspelhoTest(unittest.TestCase):
             if method == 'POST' and path.endswith('/notes'):
                 return {'id': len(self.calls)}
             return {}
+        self.amb_patch = patch.object(tg, 'ambiente_teste', return_value=None)  # sync nunca abre processo de verdade
+        self.amb_patch.start()
+        self.addCleanup(self.amb_patch.stop)
         for name, fake in (('trello_get', trello), ('gitlab', gitlab)):
             p = patch.object(tg, name, side_effect=fake)
             p.start()
@@ -74,7 +79,7 @@ class EspelhoTest(unittest.TestCase):
         created = [c for c in self.calls if c[0] == 'POST' and c[1].endswith('/issues')]
         self.assertEqual(len(created), 2)  # OUTRO nao e meu; VELHO concluido sem issue; ARQ arquivado
         self.assertIn('<!-- trello:MEU1 -->', created[0][2]['description'])
-        self.assertEqual(created[0][2]['labels'], 'fase::andamento,papel::dev,pipeline,repo-back-end')
+        self.assertEqual(created[0][2]['labels'], 'fase::andamento,papel::dev,pipeline,pipeline::dev,repo-back-end')
         self.assertEqual(created[1][2]['labels'], 'fase::andamento,papel::revisao')
         self.assertIn('revisão de MR de colega', created[1][2]['description'])
         notes = [c[2]['body'] for c in self.calls if c[1].endswith('/notes')]
@@ -108,7 +113,7 @@ class EspelhoTest(unittest.TestCase):
         with patch.object(tg.runner, 'settings', return_value=settings):
             tg.sync()
         rev = [c for c in self.calls if c[0] == 'POST' and c[1].endswith('/issues') and 'REV1' in c[2]['title']][0]
-        self.assertEqual(rev[2]['labels'], 'fase::andamento,papel::dev,pipeline,repo-back-end')
+        self.assertEqual(rev[2]['labels'], 'fase::andamento,papel::dev,pipeline,pipeline::dev,repo-back-end')
         bodies = [c[2]['body'] for c in self.calls if c[1].endswith('/notes')]
         self.assertTrue(any('Assumido a partir da revisão `mr-10-20-acl`' in b for b in bodies))
         relatorio = [b for b in bodies if b.startswith('# Relatório de mudanças')]
@@ -149,6 +154,31 @@ class EspelhoTest(unittest.TestCase):
         body = tg.issue_body(card('REV1', 'l1'), 'Em andamento', True, mrs)
         self.assertIn('[back !30](https://gl/back/30) (aberto)', body)
         self.assertNotIn('Rodada 2', body)
+
+    def test_revisao_em_teste_sobe_ambiente_e_fora_derruba(self):
+        self.amb_patch.stop()
+        calls = []
+        (tg.ROOT / '.local' / 'ambientes').mkdir(parents=True, exist_ok=True)
+        with patch.object(tg.subprocess, 'Popen', side_effect=lambda args, **kw: calls.append(args[-2:])), \
+                patch.object(tg, 'mem_available_mb', return_value=8000):
+            self.assertEqual(tg.ambiente_teste('mr-10-20-acl', True), ('ambiente subindo', 'mr-10-20-acl'))
+            tg.runner.save(tg.ROOT / '.local/ambientes/mr-10-20-acl.json', {'alvo': 'mr-10-20-acl'})
+            self.assertIsNone(tg.ambiente_teste('mr-10-20-acl', True))  # ja no ar
+            self.assertEqual(tg.ambiente_teste('mr-10-20-acl', False), ('ambiente encerrado', 'mr-10-20-acl'))
+        with patch.object(tg, 'mem_available_mb', return_value=1000):
+            tg.runner.save(tg.ROOT / '.local/ambientes/mr-10-20-acl.json', {'encerrado_em': 'x'})
+            self.assertEqual(tg.ambiente_teste('mr-10-20-acl', True)[0], 'ambiente adiado (memoria)')
+        self.assertEqual(calls, [['revisao', 'mr-10-20-acl'], ['encerrar', 'mr-10-20-acl']])
+
+    def test_fase_do_pipeline_mais_atrasada_e_bloqueio(self):
+        def tarefa(nome, fase):
+            (tg.ROOT / '.local/tasks' / nome).mkdir(parents=True, exist_ok=True)
+            (tg.ROOT / '.local/tasks' / nome / 'state.json').write_text(json.dumps({'phase': fase}), encoding='utf-8')
+            return (nome, {}, 'dev')
+        self.assertEqual(tg.pipeline_fase([tarefa('a', 'ready_for_draft'), tarefa('b', 'dev')]), 'dev')
+        self.assertEqual(tg.pipeline_fase([tarefa('a', 'ready_for_draft'), tarefa('b', 'review')]), 'revisao')
+        self.assertEqual(tg.pipeline_fase([tarefa('a', 'ready_for_draft'), tarefa('b', 'blocked')]), 'bloqueado')
+        self.assertIsNone(tg.pipeline_fase([('sem-estado', {}, 'dev')]))
 
 
 if __name__ == '__main__':

@@ -16,7 +16,7 @@ runner chama `preparar`, que deixa a funcionalidade esperando o dono com:
 Nunca toca o banco: migration nova so e listada, com o comando, para o dono aprovar (POLITICA
 item 8). `encerrar` (chamado no CONCLUIR) para os servidores e tira da tailnet; o MR fica.
 
-Uso: ambiente_revisao.py preparar|encerrar|status <entrega-ou-tarefa>
+Uso: ambiente_revisao.py preparar|encerrar|status <entrega-ou-tarefa>  |  revisao <pasta mr-* de revisao de colega>
 """
 import json
 import os
@@ -398,6 +398,33 @@ def spawn_coordinator(alvo, info):
         return {'erro': 'Habblaud nao abriu a sessao coordenadora: ' + str(error)[:200], 'pasta': str(folder)}
 
 
+def subir_servidores(alvo, info, host, ports, repos):
+    """Servidor dev por tarefa (back/front/portal), com teto de memoria, publicado so na tailnet."""
+    back_url = f'https://{host}:{ports["back"][1]}' if host and 'back' in repos else 'http://127.0.0.1:8000'
+    for entry in info['tarefas']:
+        kind = entry['kind']
+        if kind not in KINDS:
+            entry['servidor'] = {'erro': 'tipo de projeto nao reconhecido'}
+            continue
+        local, public = ports[kind]
+        env = {}
+        if kind == 'front':
+            env = {'VITE_API_URL': back_url + '/api', '__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS': host or ''}
+        elif kind == 'portal':
+            env = {'NEXT_PUBLIC_API_URL': back_url + '/api'}
+        elif kind == 'back' and host:
+            env = {'APP_URL': back_url}
+        try:
+            unit = start_server(alvo, kind, entry['repo'], local, env)
+            if not host:
+                raise RuntimeError('Tailscale indisponivel: servidor so em 127.0.0.1:' + str(local))
+            publish(local, public)
+            entry['servidor'] = {'url': f'https://{host}:{public}', 'local': f'http://127.0.0.1:{local}', 'unidade': unit}
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            msg = getattr(error, 'stderr', None) or str(error)
+            entry['servidor'] = {'erro': str(msg).strip()[:300], 'local': f'http://127.0.0.1:{local}'}
+
+
 def preparar(alvo):
     if not TASK_ID.match(alvo):
         raise ValueError('Alvo invalido')
@@ -435,29 +462,7 @@ def preparar(alvo):
                 info['seed'] = apply_seed(alvo, repos['back'][1])
             except (OSError, subprocess.SubprocessError) as error:
                 info['seed'] = {'status': 'erro', 'motivo': str(error)[:300]}
-    back_url = f'https://{host}:{ports["back"][1]}' if host and 'back' in repos else 'http://127.0.0.1:8000'
-    for entry in info['tarefas']:
-        kind = entry['kind']
-        if kind not in KINDS:
-            entry['servidor'] = {'erro': 'tipo de projeto nao reconhecido'}
-            continue
-        local, public = ports[kind]
-        env = {}
-        if kind == 'front':
-            env = {'VITE_API_URL': back_url + '/api', '__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS': host or ''}
-        elif kind == 'portal':
-            env = {'NEXT_PUBLIC_API_URL': back_url + '/api'}
-        elif kind == 'back' and host:
-            env = {'APP_URL': back_url}
-        try:
-            unit = start_server(alvo, kind, entry['repo'], local, env)
-            if not host:
-                raise RuntimeError('Tailscale indisponivel: servidor so em 127.0.0.1:' + str(local))
-            publish(local, public)
-            entry['servidor'] = {'url': f'https://{host}:{public}', 'local': f'http://127.0.0.1:{local}', 'unidade': unit}
-        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
-            msg = getattr(error, 'stderr', None) or str(error)
-            entry['servidor'] = {'erro': str(msg).strip()[:300], 'local': f'http://127.0.0.1:{local}'}
+    subir_servidores(alvo, info, host, ports, repos)
     info['roteiro'] = write_roteiro(alvo, info)
     previous = STATE_DIR / (alvo + '.json')
     if previous.exists() and not runner.read(previous).get('encerrado_em'):
@@ -467,6 +472,101 @@ def preparar(alvo):
     if not os.environ.get('PIPELINE_SEM_AMBIENTE'):
         info['coordenador'] = spawn_coordinator(alvo, info)
         runner.save(STATE_DIR / (alvo + '.json'), info)
+    return info
+
+
+# --- Revisao de MR de colega (pasta tarefas/mr-*): mesmo ambiente, sem MR/commit (decisao do dono, 06/11/2026:
+# tudo em "Em Fase de Teste" tem servidor e roteiro). Worktrees em _review-wt/<be|fe|pt>_mr<iid>.
+REVIEW_WT = ROOT.parent / '_review-wt'
+REVIEW_PREFIX = {'back-end': 'be', 'front-end': 'fe', 'transparencia': 'pt'}
+REVIEW_CLONE = {'back-end': 'erp-back-end', 'front-end': 'erp-front-end', 'transparencia': 'transparencia'}
+
+
+def review_worktree(mr):
+    """Worktree do MR no commit atual da branch. Ja existe e tem alteracao local: usa como esta, sem atualizar."""
+    prefix = REVIEW_PREFIX.get(mr['repo'])
+    if not prefix:
+        raise RuntimeError('repositorio sem prefixo de revisao: ' + mr['repo'])
+    main = runner.repository({'repo': runner.settings().get('review_clones', REVIEW_CLONE).get(mr['repo'], mr['repo'])})
+    subprocess.run(['git', '-C', str(main), 'fetch', '-q', 'origin', mr['branch']], check=True, capture_output=True,
+                   text=True, timeout=180)
+    target = runner.git(main, 'rev-parse', 'FETCH_HEAD')
+    pattern = re.compile(r'(?<!\d)' + str(mr['iid']) + r'(?!\d)')
+    found = sorted((d for d in REVIEW_WT.glob(prefix + '_*') if d.is_dir() and (d / '.git').exists() and pattern.search(d.name)),
+                   key=lambda d: (d.name != f"{prefix}_mr{mr['iid']}", d.name))
+    if found:
+        wt = found[0]
+        if runner.git(wt, 'status', '--porcelain', '--untracked-files=no'):
+            return wt, 'worktree com alteracao local: nao atualizei'
+        if runner.git(wt, 'rev-parse', 'HEAD') != target:
+            subprocess.run(['git', '-C', str(wt), 'checkout', '-q', '--detach', target], check=True, capture_output=True, text=True)
+        return wt, ''
+    wt = REVIEW_WT / f"{prefix}_mr{mr['iid']}"
+    REVIEW_WT.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['git', '-C', str(main), 'worktree', 'add', '-q', '--detach', str(wt), target], check=True,
+                   capture_output=True, text=True)
+    for name in ('.env', 'vendor', 'node_modules'):
+        src = main / name
+        if src.exists() and not (wt / name).exists():
+            if name == '.env':
+                shutil.copy2(src, wt / name)
+            else:
+                (wt / name).symlink_to(src)
+    return wt, 'worktree novo (dependencias ligadas ao clone principal)'
+
+
+def write_roteiro_revisao(alvo, info):
+    lines = [f'# Roteiro de teste — revisão {alvo}', '', '## Onde abrir']
+    for t in info['tarefas']:
+        srv, mr = t.get('servidor') or {}, t.get('mr') or {}
+        lines.append(f"- **{t['task']}** ({t.get('kind') or '?'}): "
+                     + (f"[servidor]({srv['url']})" if srv.get('url') else 'servidor: ' + str(srv.get('erro', '—')))
+                     + (f" · [MR]({mr['url']})" if mr.get('url') else '') + (f" — _{t['nota']}_" if t.get('nota') else ''))
+    mig = info.get('migracao') or {}
+    if mig:
+        texto = {'aplicadas': f"Migrations do MR aplicadas no banco local `{mig.get('banco')}`.",
+                 'nada': f"Sem migration pendente no banco local `{mig.get('banco')}`."}.get(mig.get('status'),
+                 f"Migrations NÃO aplicadas: {mig.get('motivo', '?')}. Comando, depois de olhar o SQL: `{info.get('comando_migrate', '')}`")
+        lines += ['', '## Banco', texto]
+    manual = ROOT / 'tarefas' / alvo / 'roteiro.md'
+    lines += ['', manual.read_text(encoding='utf-8').strip() if manual.exists() else
+              '## O que testar\n_Esta revisão ainda não tem roteiro: peça à sessão de revisão o `roteiro.md` '
+              '(passos do ponto de vista de quem usa a tela)._']
+    out = ROOT / 'tarefas' / alvo / 'roteiro-teste.md'
+    out.write_text('\n'.join(lines).rstrip() + '\n', encoding='utf-8')
+    return str(out.relative_to(ROOT))
+
+
+def preparar_revisao(alvo):
+    """Ambiente de teste de uma revisao de MR de colega: worktree por MR aberto, migrations nao destrutivas no banco
+    local, servidores na tailnet e roteiro (tarefas/<alvo>/roteiro.md, escrito pela revisao). Nunca commit/push/MR."""
+    import trello_gitlab as tg
+    if not TASK_ID.match(alvo) or not alvo.startswith('mr-') or not (ROOT / 'tarefas' / alvo).is_dir():
+        raise ValueError('Revisao desconhecida (pasta tarefas/mr-*): ' + alvo)
+    mrs = [m for m in tg.review_mrs(alvo, {}) if m['estado'] == 'aberto']
+    host, ports = tailnet_host(), ports_for(alvo)
+    info = {'alvo': alvo, 'revisao': True, 'at': runner.now(), 'host': host, 'tarefas': [], 'migrations': [], 'erros': []}
+    repos = {}
+    for mr in mrs:
+        entry = {'task': f"{mr['repo']} !{mr['iid']}", 'mr': {'url': mr['url'], 'iid': mr['iid']}}
+        try:
+            wt, nota = review_worktree(mr)
+            entry.update(repo=str(wt), kind=kind_of(wt), nota=nota)
+            if entry['kind']:
+                repos[entry['kind']] = (entry['task'], wt)
+        except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as error:
+            entry.update(kind=None, nota='worktree: ' + str(error)[:200])
+        info['tarefas'].append(entry)
+    if 'back' in repos:
+        info['comando_migrate'] = f"cd {repos['back'][1]} && php artisan migrate"
+        try:
+            info['migracao'] = apply_migrations(repos['back'][1])
+        except (OSError, subprocess.SubprocessError) as error:
+            info['migracao'] = {'status': 'erro', 'motivo': str(error)[:300]}
+    subir_servidores(alvo, info, host, ports, repos)
+    info['roteiro'] = write_roteiro_revisao(alvo, info)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    runner.save(STATE_DIR / (alvo + '.json'), info)
     return info
 
 
@@ -492,7 +592,7 @@ def alvo_de(task):
 
 
 def main(argv):
-    if len(argv) != 3 or argv[1] not in ('preparar', 'encerrar', 'status'):
+    if len(argv) != 3 or argv[1] not in ('preparar', 'encerrar', 'status', 'revisao'):
         print(__doc__)
         return 2
     cmd, alvo = argv[1], argv[2]
@@ -500,7 +600,7 @@ def main(argv):
         path = STATE_DIR / (alvo + '.json')
         print(path.read_text(encoding='utf-8') if path.exists() else '{}')
         return 0
-    result = preparar(alvo) if cmd == 'preparar' else encerrar(alvo)
+    result = {'preparar': preparar, 'encerrar': encerrar, 'revisao': preparar_revisao}[cmd](alvo)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

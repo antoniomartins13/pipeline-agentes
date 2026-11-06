@@ -370,6 +370,12 @@ def invoke(provider, prompt, repo, run, phase, config):
                                 else (ROOT / extra).resolve()))
             for _, sibling in entrega_siblings(run.parent.name):
                 args.append(str(sibling))
+            # Worktree: historico/refs ficam no .git do clone principal; ler e legitimo nas fases sem escrita
+            # (sem isso, um `git log` ou leitura de .git/worktrees/.../logs virava pedido de permissao).
+            common = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+                                    cwd=repo, capture_output=True, text=True)
+            if common.returncode == 0 and common.stdout.strip():
+                args.append(str(Path(common.stdout.strip()).resolve()))
         # Do not grant a dev additional writable directories. Its short task
         # context is carried by the prompt; read denials remain explicit failures.
     elif provider == 'codex':

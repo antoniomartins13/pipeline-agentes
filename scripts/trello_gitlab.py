@@ -160,7 +160,8 @@ def review_mrs(task, cache):
             keep.append(alone[0])
     order = [project.rsplit('/', 1)[-1] for project in projects]
     keep.sort(key=lambda mr: (mr['estado'] != 'aberto', order.index(mr['repo']), -mr['iid']))
-    mrs = [{k: mr[k] for k in ('repo', 'iid', 'url', 'estado')} for mr in keep]
+    # MR fechado (substituido por um consolidado, desistido) nao e o que revisar: so abertos e mergeados.
+    mrs = [{k: mr[k] for k in ('repo', 'iid', 'url', 'estado')} for mr in keep if mr['estado'] != 'fechado']
     cache[task] = {'key': key, 'at': time.time(), 'mrs': mrs}
     return mrs
 

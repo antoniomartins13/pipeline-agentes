@@ -132,13 +132,15 @@ class EspelhoTest(unittest.TestCase):
         (rev / 'HANDOFF.md').write_text('Revisao do card 3905. Rodada 2 consolidada em !30 (back) e !31 (front).',
                                         encoding='utf-8')
         existe = {('back', '10'): 'b1', ('front', '10'): 'antigo', ('front', '20'): 'b1', ('back', '30'): 'b2',
-                  ('front', '31'): 'b2', ('back', '31'): 'outra-coisa'}
+                  ('front', '31'): 'b2', ('back', '31'): 'outra-coisa', ('back', '20'): 'b0', ('front', '30'): 'b0'}
+        fechados = {('back', '20'), ('front', '30')}  # par antigo, substituido: fechado nao aparece
 
         def gitlab(method, path, body=None):
             proj, n = path.split('/')[1].split('%2F')[-1], path.rsplit('/', 1)[-1]
             if (proj, n) not in existe:
                 raise RuntimeError('404')
-            return {'iid': int(n), 'web_url': f'https://gl/{proj}/{n}', 'state': 'opened', 'source_branch': existe[(proj, n)]}
+            return {'iid': int(n), 'web_url': f'https://gl/{proj}/{n}', 'source_branch': existe[(proj, n)],
+                    'state': 'closed' if (proj, n) in fechados else 'opened'}
         with patch.object(tg, 'gitlab', side_effect=gitlab), \
                 patch.object(tg.runner, 'settings', return_value={'gestao_mr_projects': ['g/back', 'g/front']}):
             mrs = tg.review_mrs('mr-10-20-acl', {})

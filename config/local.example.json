@@ -10,5 +10,9 @@
   },
   "notes": "Copie como local.json (o instalar.sh faz isso). dono: quem aprova os gates. gitlab_host: GitLab dos MRs em draft; gitlab_token_file: arquivo com GITLAB_TOKEN=... (sem ele vale o login do glab). repositories: alias -> pasta do clone, relativa a _pipeline. Segredos ficam nas credenciais dos CLIs ou em arquivos fora do repositorio. trello_board/gestao_project: espelho Trello -> GitLab (scripts/trello_gitlab.py; chave em ~/.config/pipeline/trello.env).",
   "trello_board": "<shortLink do board>",
-  "gestao_project": "grupo/projeto-de-gestao"
+  "gestao_project": "grupo/projeto-de-gestao",
+  "gestao_mr_projects": [
+    "grupo/back-end",
+    "grupo/front-end"
+  ]
 }

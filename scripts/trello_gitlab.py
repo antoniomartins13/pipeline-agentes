@@ -55,10 +55,12 @@ def fase_of(list_name):
     return 'backlog'
 
 
-def issue_body(card, list_name, revisao=False):
+def issue_body(card, list_name, revisao=False, mrs=()):
     lines = [f"**Card:** {card['shortUrl']}  ·  **Lista no Trello:** {list_name}"]
     if revisao:
         lines.append('**Papel:** revisão de MR de colega. O parecer fica no pipeline e é privado: não vem para cá.')
+    if mrs:
+        lines.append('**MRs:** ' + ' · '.join(f"[{m['repo']} !{m['iid']}]({m['url']}) ({m['estado']})" for m in mrs))
     lines += ['', (card.get('desc') or '').strip()]
     for checklist in card.get('checklists') or []:
         lines += ['', f"**{checklist.get('name') or 'Checklist'}**"]
@@ -120,6 +122,49 @@ def tasks_for_card(card, owners=None):
     return found, None
 
 
+MR_STATE = {'opened': 'aberto', 'merged': 'mergeado', 'closed': 'fechado', 'locked': 'travado'}
+
+
+def review_mrs(task, cache):
+    """MRs de uma revisao (pasta mr-*): numeros do nome da pasta e referencias !NNN dos .md dela, conferidos no GitLab
+    (projetos de gestao_mr_projects). Fica o par back/front que compartilha branch; numero do nome da pasta sem par
+    so entra se existir em um projeto so. Da pasta sai so o numero: nenhum conteudo da revisao. Cache de 1 hora."""
+    projects = runner.settings().get('gestao_mr_projects') or []
+    folder = ROOT / 'tarefas' / task
+    if not projects or not folder.is_dir():
+        return []
+    from_name = set(re.findall(r'(?<!\d)\d{2,3}(?!\d)', task))
+    text = '\n'.join(f.read_text(encoding='utf-8', errors='replace') for f in sorted(folder.glob('*.md')))
+    numbers = sorted(from_name | set(re.findall(r'!(\d{2,4})\b', text)), key=int)
+    key = ','.join(numbers)
+    hit = cache.get(task) or {}
+    if hit.get('key') == key and time.time() - hit.get('at', 0) < 3600:
+        return hit['mrs']
+    found = []
+    for number in numbers:
+        for project in projects:
+            try:
+                mr = gitlab('GET', f"projects/{urllib.parse.quote(project, safe='')}/merge_requests/{number}")
+            except RuntimeError:
+                continue
+            if isinstance(mr, dict) and mr.get('iid'):
+                found.append({'n': number, 'repo': project.rsplit('/', 1)[-1], 'iid': mr['iid'], 'url': mr['web_url'],
+                              'estado': MR_STATE.get(mr.get('state'), mr.get('state')), 'branch': mr.get('source_branch')})
+    branches = {}
+    for mr in found:
+        branches.setdefault(mr['branch'], set()).add(mr['n'])
+    keep = [mr for mr in found if len(branches[mr['branch']]) >= 2]
+    for number in from_name:
+        alone = [mr for mr in found if mr['n'] == number]
+        if len(alone) == 1 and alone[0] not in keep:
+            keep.append(alone[0])
+    order = [project.rsplit('/', 1)[-1] for project in projects]
+    keep.sort(key=lambda mr: (mr['estado'] != 'aberto', order.index(mr['repo']), -mr['iid']))
+    mrs = [{k: mr[k] for k in ('repo', 'iid', 'url', 'estado')} for mr in keep]
+    cache[task] = {'key': key, 'at': time.time(), 'mrs': mrs}
+    return mrs
+
+
 def mr_links():
     """tarefa -> URL do MR, dos ambientes de revisao (.local/ambientes/*.json)."""
     links = {}
@@ -165,7 +210,7 @@ def repo_label(manifest):
     return None
 
 
-def labels_for(card, list_name, tasks):
+def labels_for(card, list_name, tasks, mrs=()):
     labels = {'fase::' + fase_of(list_name)}
     if plain(list_name).startswith('bugs'):
         labels.add('tipo::bug')
@@ -175,6 +220,7 @@ def labels_for(card, list_name, tasks):
     if dev:
         labels.add('pipeline')
     labels |= {lab for _, m, _ in dev if (lab := repo_label(m))}
+    labels |= {'repo-' + ('portal' if m['repo'] == 'transparencia' else m['repo']) for m in mrs}
     return sorted(labels)
 
 
@@ -241,8 +287,14 @@ def sync(dry_run=False):
             continue  # so espelha concluido de quem ja estava aqui (fecha a issue)
         tasks, origem = tasks_for_card(card, owners)
         revisao = any(t[2] == 'revisao' for t in tasks)
-        body = {'title': card['name'][:250], 'description': issue_body(card, list_name, revisao),
-                'labels': ','.join(labels_for(card, list_name, tasks))}
+        mrs = []
+        if revisao and not dry_run:
+            cache = state.setdefault('mr_cache', {})
+            for task, _, papel in tasks:
+                if papel == 'revisao':
+                    mrs += [m for m in review_mrs(task, cache) if m not in mrs]
+        body = {'title': card['name'][:250], 'description': issue_body(card, list_name, revisao, mrs),
+                'labels': ','.join(labels_for(card, list_name, tasks, mrs))}
         digest = runner.digest(json.dumps(body, sort_keys=True).encode('utf-8'))
         entry = known or {'notes': {}}
         if dry_run:

@@ -127,6 +127,27 @@ class EspelhoTest(unittest.TestCase):
         self.assertEqual([(t, p) for t, _, p in tasks], [('outra-dev', 'dev')])
         self.assertEqual(origem, 'mr-10-20-acl')
 
+    def test_mrs_da_revisao_pareados_pela_branch_sem_conteudo_da_pasta(self):
+        rev = tg.ROOT / 'tarefas' / 'mr-10-20-acl'
+        (rev / 'HANDOFF.md').write_text('Revisao do card 3905. Rodada 2 consolidada em !30 (back) e !31 (front).',
+                                        encoding='utf-8')
+        existe = {('back', '10'): 'b1', ('front', '10'): 'antigo', ('front', '20'): 'b1', ('back', '30'): 'b2',
+                  ('front', '31'): 'b2', ('back', '31'): 'outra-coisa'}
+
+        def gitlab(method, path, body=None):
+            proj, n = path.split('/')[1].split('%2F')[-1], path.rsplit('/', 1)[-1]
+            if (proj, n) not in existe:
+                raise RuntimeError('404')
+            return {'iid': int(n), 'web_url': f'https://gl/{proj}/{n}', 'state': 'opened', 'source_branch': existe[(proj, n)]}
+        with patch.object(tg, 'gitlab', side_effect=gitlab), \
+                patch.object(tg.runner, 'settings', return_value={'gestao_mr_projects': ['g/back', 'g/front']}):
+            mrs = tg.review_mrs('mr-10-20-acl', {})
+        self.assertEqual([(m['repo'], m['iid']) for m in mrs],
+                         [('back', 30), ('back', 10), ('front', 31), ('front', 20)])
+        body = tg.issue_body(card('REV1', 'l1'), 'Em andamento', True, mrs)
+        self.assertIn('[back !30](https://gl/back/30) (aberto)', body)
+        self.assertNotIn('Rodada 2', body)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -140,7 +140,9 @@ def review_mrs(task, cache):
     numbers = sorted(from_name | set(re.findall(r'!(\d{2,4})\b', text)), key=int)
     key = ','.join(numbers)
     hit = cache.get(task) or {}
-    if hit.get('key') == key and time.time() - hit.get('at', 0) < 3600 and all('branch' in m for m in hit['mrs']):
+    # MR aberto pode ser mergeado a qualquer momento (o merge encerra a revisao): cache curto enquanto houver aberto.
+    ttl = 600 if any(m.get('estado') == 'aberto' for m in hit.get('mrs') or []) else 3600
+    if hit.get('key') == key and time.time() - hit.get('at', 0) < ttl and all('branch' in m for m in hit['mrs']):
         return hit['mrs']
     found = []
     for number in numbers:
@@ -410,9 +412,12 @@ def sync(dry_run=False):
                     report.append(('titulo', task, card['name'][:60]))
         if revisao and not dry_run:
             (ROOT / '.local' / 'ambientes').mkdir(parents=True, exist_ok=True)
+            # Revisao de colega nao tem CONCLUIR: o merge e a aprovacao. Tudo mergeado -> derruba o ambiente,
+            # mesmo com o card ainda em "Em Fase de Teste".
+            mergeado = bool(mrs) and all(m['estado'] == 'mergeado' for m in mrs)
             for task, _, papel in tasks:
                 if papel == 'revisao' and task.startswith('mr-'):
-                    acao = ambiente_teste(task, fase == 'teste')
+                    acao = ambiente_teste(task, fase == 'teste' and not mergeado)
                     if acao:
                         report.append(acao)
                     break

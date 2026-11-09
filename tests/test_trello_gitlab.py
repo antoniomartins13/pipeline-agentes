@@ -170,6 +170,20 @@ class EspelhoTest(unittest.TestCase):
             self.assertEqual(tg.ambiente_teste('mr-10-20-acl', True)[0], 'ambiente adiado (memoria)')
         self.assertEqual(calls, [['revisao', 'mr-10-20-acl'], ['encerrar', 'mr-10-20-acl']])
 
+    def test_revisao_com_todos_os_mrs_mergeados_derruba_o_ambiente(self):
+        LISTS.append({'id': 'l4', 'name': 'Em Fase de Teste'})
+        self.addCleanup(LISTS.pop)
+        self.cards[4]['idList'] = 'l4'
+        abertos = [{'repo': 'back-end', 'iid': 10, 'url': 'u', 'estado': 'aberto', 'branch': 'b'},
+                   {'repo': 'front-end', 'iid': 20, 'url': 'u', 'estado': 'mergeado', 'branch': 'b'}]
+        with patch.object(tg, 'review_mrs', return_value=abertos):
+            tg.sync()
+        tg.ambiente_teste.assert_called_with('mr-10-20-acl', True)
+        abertos[0]['estado'] = 'mergeado'  # o merge e a aprovacao da revisao
+        with patch.object(tg, 'review_mrs', return_value=abertos):
+            tg.sync()
+        tg.ambiente_teste.assert_called_with('mr-10-20-acl', False)
+
     def test_fase_do_pipeline_mais_atrasada_e_bloqueio(self):
         def tarefa(nome, fase):
             (tg.ROOT / '.local/tasks' / nome).mkdir(parents=True, exist_ok=True)

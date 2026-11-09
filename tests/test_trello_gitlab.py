@@ -180,6 +180,14 @@ class EspelhoTest(unittest.TestCase):
         self.assertEqual(tg.pipeline_fase([tarefa('a', 'ready_for_draft'), tarefa('b', 'blocked')]), 'bloqueado')
         self.assertIsNone(tg.pipeline_fase([('sem-estado', {}, 'dev')]))
 
+    def test_titulo_da_sala_vem_do_card_sem_sobrescrever(self):
+        tg.sync()
+        self.assertEqual((tg.ROOT / 'tarefas/minha-back/titulo.txt').read_text().strip(), 'Card MEU1')
+        self.assertEqual((tg.ROOT / 'tarefas/mr-10-20-acl/titulo.txt').read_text().strip(), 'Card REV1')
+        (tg.ROOT / 'tarefas/mr-10-20-acl/titulo.txt').write_text('Meu nome\n')
+        tg.sync()
+        self.assertEqual((tg.ROOT / 'tarefas/mr-10-20-acl/titulo.txt').read_text().strip(), 'Meu nome')
+
 
 if __name__ == '__main__':
     unittest.main()

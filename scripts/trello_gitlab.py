@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -318,6 +319,18 @@ def ambiente_teste(task, em_teste):
     return ('ambiente ' + ('subindo' if em_teste else 'encerrado'), task)
 
 
+def ensure_titulo(task, card_name):
+    """Nome da sala no Habblaud (tarefas/<pasta>/titulo.txt): o do card, so se ainda nao existir (o dono pode editar).
+    Tarefa de entrega grava na pasta da entrega."""
+    manifest = manifest_of(task)
+    folder = ROOT / 'tarefas' / (manifest.get('entrega') or task)
+    path = folder / 'titulo.txt'
+    if folder.is_dir() and not path.exists():
+        path.write_text(card_name.strip()[:120] + '\n', encoding='utf-8')
+        return True
+    return False
+
+
 def sync(dry_run=False):
     cfg = runner.settings()
     board, project = cfg.get('trello_board'), cfg.get('gestao_project')
@@ -391,6 +404,10 @@ def sync(dry_run=False):
                 state['cards'][card['shortLink']] = entry
                 runner.save(STATE, state)  # nota a nota: falha no meio nao duplica na proxima rodada
                 report.append(('documento', entry['url'], note_key))
+        if not dry_run:
+            for task, _, papel in tasks:
+                if (papel == 'revisao') == revisao and ensure_titulo(task, card['name']):
+                    report.append(('titulo', task, card['name'][:60]))
         if revisao and not dry_run:
             (ROOT / '.local' / 'ambientes').mkdir(parents=True, exist_ok=True)
             for task, _, papel in tasks:
@@ -443,8 +460,14 @@ def main(argv=None):
         last = (runner.read(STATE).get('last_sync') or 0) if STATE.exists() else 0
         if time.time() - last < a.se_passou:
             return 0
-    for line in sync(a.dry_run):
-        print(' | '.join(str(x) for x in line))
+    try:
+        for line in sync(a.dry_run):
+            print(' | '.join(str(x) for x in line))
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        # Rede fora (ex.: proxy do cabo com certificado proprio): uma linha no log e tenta no proximo ciclo.
+        # Nunca desligar a verificacao de certificado para contornar.
+        print(f'{runner.now()} | rede | Trello/GitLab inacessivel, tento no proximo ciclo: {str(error)[:160]}', file=sys.stderr)
+        return 1
     return 0
 
 

@@ -1,6 +1,7 @@
 """Ambiente de revisao (scripts/ambiente_revisao.py): partes que nao tocam git, GitLab nem servidores."""
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -129,6 +130,52 @@ class AmbienteTest(unittest.TestCase):
         self.assertEqual(out, '')
         self.assertEqual((repo / '.git/info/exclude').read_text().count('/.revisao/'), 1)
 
+
+    def test_seed_sem_tag_php_executa_e_nao_imprime(self):
+        repo = self.root / 'back2'
+        (repo / '.revisao').mkdir(parents=True)
+        (repo / '.env').write_text('DB_HOST=127.0.0.1\nAPP_ENV=local\n', encoding='utf-8')
+        (repo / '.revisao' / 'seed.php').write_text('use App\\X;\nX::firstOrCreate(["n" => 1]);\necho "ok";', encoding='utf-8')
+
+        def fake_run(args, **kwargs):
+            return type('R', (), {'returncode': 0, 'stdout': 'ok\n', 'stderr': ''})()
+        with patch.object(amb.subprocess, 'run', side_effect=fake_run):
+            res = amb.apply_seed('ent', repo)
+        self.assertEqual(res['registros'], ['ok'])
+        self.assertTrue((repo / '.revisao' / '.seed-exec.php').read_text().startswith('<?php\nuse App'))
+
+        def echo_run(args, **kwargs):  # PHP imprimiu o arquivo em vez de rodar
+            code = (repo / '.revisao' / '.seed-exec.php').read_text()[6:]
+            return type('R', (), {'returncode': 0, 'stdout': code, 'stderr': ''})()
+        (repo / '.revisao' / 'seed.php').write_text('X::firstOrCreate(["n" => 2]);', encoding='utf-8')
+        with patch.object(amb.subprocess, 'run', side_effect=echo_run):
+            self.assertEqual(amb.apply_seed('ent', repo)['status'], 'erro')
+
+    def test_coordenadora_retoma_a_mesma_conversa_quando_o_roteiro_muda(self):
+        (self.root / 'tarefas' / 'ent').mkdir(exist_ok=True)
+        rot = self.root / 'tarefas' / 'ent' / 'roteiro-teste.md'
+        rot.write_text('v1', encoding='utf-8')
+        info = {'roteiro': 'tarefas/ent/roteiro-teste.md', 'tarefas': []}
+        v1 = amb.roteiro_versao(info)
+        info['coordenador'] = {'id': 'abc', 'versao': v1}
+        self.assertEqual(amb.spawn_coordinator('ent', info)['id'], 'abc')  # nada mudou
+        projects = self.root / 'projects'
+        conv = projects / re.sub(r'[^A-Za-z0-9]', '-', str(self.root / 'tarefas' / 'ent'))
+        conv.mkdir(parents=True)
+        (conv / 'sess-1.jsonl').write_text('{"content": "Você é a sessão coordenadora da funcionalidade ent"}', encoding='utf-8')
+        rot.write_text('v2', encoding='utf-8')
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return type('R', (), {'returncode': 0, 'stdout': 'backgrounded · 9f9f · x', 'stderr': ''})()
+        with patch.object(amb, 'CLAUDE_PROJECTS', projects), patch.object(amb.subprocess, 'run', side_effect=fake_run):
+            res = amb.spawn_coordinator('ent', info)
+        self.assertEqual((res['id'], res['sessao']), ('9f9f', 'sess-1'))
+        self.assertEqual(res['versao'], amb.roteiro_versao(info))
+        self.assertIn('--resume', calls[0])
+        self.assertEqual(calls[0][calls[0].index('--resume') + 1], 'sess-1')
+        self.assertIn('Atualização do runner', calls[0][-1])
 
 if __name__ == '__main__':
     unittest.main()

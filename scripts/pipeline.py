@@ -396,7 +396,9 @@ def invoke(provider, prompt, repo, run, phase, config):
         # modo plan ate a escrita dentro do workspace e negada.
         prompt += ('\n\nRestricoes deste executor (agy headless): qualquer acao sem permissao ENCERRA a execucao '
                    'sem resposta e a fase e perdida. No shell, use somente comandos de leitura: '
-                   + ', '.join(AGY_READ_COMMANDS) + ' (direto, no diretorio atual, que ja e o repositorio: sem cd, sem git -C, sem caminho de outro repositorio no git). Nada de redirecionamento (>), outros comandos, '
+                   + ', '.join(AGY_READ_COMMANDS) + ' (direto, no diretorio atual, que ja e o repositorio: sem cd, sem git -C, sem caminho de outro repositorio no git). '
+                   'UM comando por chamada: nada de ;, &&, ||, | para outro comando fora da lista, 2>/dev/null ou echo; '
+                   'para achar arquivos use grep -rl ou ls, nunca find. Nada de redirecionamento (>), outros comandos, '
                    'instalacao, testes ou servidores (o runner roda os checks); no dev o git nao funciona no sandbox, use o diff.patch. Leia apenas o repositorio, '
                    'a pasta desta tarefa e as das tarefas irmas em tarefas/. Nao leia scripts/, config/ nem .local/ '
                    'do runner e nao investigue falhas anteriores do pipeline: elas ja foram tratadas.')

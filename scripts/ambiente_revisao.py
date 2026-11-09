@@ -309,17 +309,26 @@ def apply_seed(alvo, repo):
     perigoso = sorted({m.group(0).strip() for m in SEED_PERIGOSO.finditer(code)})
     if perigoso:
         return {'status': 'barrado', 'motivo': 'seed com operacao proibida: ' + ', '.join(perigoso)[:200]}
-    digest = runner.digest(code.encode('utf-8'))
+    # 'v2': o seed sem `<?php` era so impresso pelo require, sem rodar; a versao muda o hash para reaplicar.
+    digest = runner.digest(b'seed-v2\n' + code.encode('utf-8'))
     previous = STATE_DIR / (alvo + '.json')
     old = (runner.read(previous).get('seed') or {}) if previous.exists() else {}
     if old.get('status') == 'aplicado' and old.get('hash') == digest:
         return old
+    body = code.lstrip()
+    if body.startswith('<?php'):
+        body = body[5:]
+    # Arquivo de execucao sempre com a tag de abertura: sem ela o PHP imprime o texto em vez de executar.
+    runfile = Path(repo) / runner.REVISAO_DIR / '.seed-exec.php'
+    runfile.write_text('<?php\n' + body, encoding='utf-8')
     run = subprocess.run([shutil.which('php') or 'php', 'artisan', 'tinker', '--no-ansi', '--execute',
-                          f"require base_path('{runner.REVISAO_DIR}/seed.php');"],
+                          f"require base_path('{runner.REVISAO_DIR}/.seed-exec.php');"],
                          cwd=repo, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
     out = (run.stdout or '').strip()
     if run.returncode:
         return {'status': 'erro', 'hash': digest, 'motivo': ((run.stderr or '') + out).strip()[-400:]}
+    if body.strip() and out.endswith(body.strip()[-200:]):
+        return {'status': 'erro', 'hash': digest, 'motivo': 'o seed foi impresso em vez de executado'}
     return {'status': 'aplicado', 'hash': digest, 'registros': out.splitlines()[-30:]}
 
 
@@ -395,21 +404,71 @@ def review_coordinator_prompt(alvo, info):
     )
 
 
+CLAUDE_PROJECTS = Path.home() / '.claude' / 'projects'
+COORD_MARK = 'sessão coordenadora'
+
+
+def roteiro_versao(info):
+    """Versao do que a coordenadora entregou: muda quando o roteiro muda (CORRIGIR, ambiente refeito)."""
+    path = ROOT / info['roteiro'] if info.get('roteiro') else None
+    return runner.digest(path.read_bytes())[:16] if path and path.exists() else ''
+
+
+def coordinator_session(folder):
+    """Id da conversa da coordenadora da sala: a mais recente da pasta que comecou como coordenadora."""
+    pasta = CLAUDE_PROJECTS / re.sub(r'[^A-Za-z0-9]', '-', str(folder))
+    for f in sorted(pasta.glob('*.jsonl'), key=lambda x: x.stat().st_mtime, reverse=True) if pasta.is_dir() else []:
+        with f.open(encoding='utf-8', errors='replace') as fh:
+            head = fh.read(20000)
+        if COORD_MARK in head:
+            return f.stem
+    return None
+
+
+def update_prompt(alvo, prompt):
+    return (f'Atualização do runner: a funcionalidade {alvo} mudou (correção ou ambiente refeito) e o roteiro foi '
+            'regravado. Esqueça o roteiro anterior, releia os arquivos e, na resposta, diga primeiro o que mudou desde a '
+            'versão que você entregou antes. As instruções valem como no início:\n\n' + prompt)
+
+
+def resume_coordinator(folder, session, prompt):
+    """Continua a mesma conversa em segundo plano (a sala segue com uma sessao so)."""
+    claude = shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
+    run = subprocess.run([claude, '--bg', '--resume', session, '-n', 'Coordenação: ' + folder.name, '--', prompt],
+                         cwd=folder, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    short = re.search(r'backgrounded\s*·\s*([\w-]+)', run.stdout or '')
+    if run.returncode or not short:
+        raise RuntimeError(((run.stderr or '') + (run.stdout or '')).strip()[:200] or 'claude --bg nao respondeu')
+    return short.group(1)
+
+
 def spawn_coordinator(alvo, info, prompt=None):
-    """Abre a sessao coordenadora na pasta da funcionalidade/revisao (sala dela no Habblaud), uma vez por ambiente."""
+    """Abre a sessao coordenadora na pasta da funcionalidade/revisao (sala dela no Habblaud), uma por sala.
+
+    Se a sala ja tem coordenadora e o roteiro mudou, a mesma conversa retoma com o roteiro novo."""
     import urllib.request
     old = (info.get('coordenador') or {})
-    if old.get('id') and not old.get('erro'):
-        return old
     folder = ROOT / 'tarefas' / alvo
-    body = json.dumps({'folder': str(folder), 'prompt': prompt or coordinator_prompt(alvo, info)}).encode('utf-8')
+    versao = roteiro_versao(info)
+    prompt = prompt or coordinator_prompt(alvo, info)
+    if old.get('id') and not old.get('erro'):
+        if old.get('versao') == versao:
+            return old
+        session = coordinator_session(folder)
+        if session:
+            try:
+                short = resume_coordinator(folder, session, update_prompt(alvo, prompt))
+                return {**old, 'id': short, 'sessao': session, 'versao': versao, 'at': runner.now()}
+            except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+                return {**old, 'erro_retomada': str(error)[:200]}
+    body = json.dumps({'folder': str(folder), 'prompt': prompt}).encode('utf-8')
     req = urllib.request.Request(HABBLAUD + '/api/spawn', data=body, method='POST',
                                  headers={'Content-Type': 'application/json', 'Origin': 'http://localhost:4747'})
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         with opener.open(req, timeout=30) as resp:
             data = json.loads(resp.read().decode('utf-8') or '{}')
-        return {'id': data.get('id'), 'at': runner.now(), 'pasta': str(folder)}
+        return {'id': data.get('id'), 'at': runner.now(), 'pasta': str(folder), 'versao': versao}
     except (OSError, ValueError) as error:
         return {'erro': 'Habblaud nao abriu a sessao coordenadora: ' + str(error)[:200], 'pasta': str(folder)}
 

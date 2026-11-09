@@ -151,31 +151,44 @@ class AmbienteTest(unittest.TestCase):
         with patch.object(amb.subprocess, 'run', side_effect=echo_run):
             self.assertEqual(amb.apply_seed('ent', repo)['status'], 'erro')
 
-    def test_coordenadora_retoma_a_mesma_conversa_quando_o_roteiro_muda(self):
+    def test_coordenadora_no_tmux_reabre_a_conversa_e_recebe_o_roteiro_novo(self):
         (self.root / 'tarefas' / 'ent').mkdir(exist_ok=True)
         rot = self.root / 'tarefas' / 'ent' / 'roteiro-teste.md'
         rot.write_text('v1', encoding='utf-8')
         info = {'roteiro': 'tarefas/ent/roteiro-teste.md', 'tarefas': []}
-        v1 = amb.roteiro_versao(info)
-        info['coordenador'] = {'id': 'abc', 'versao': v1}
-        self.assertEqual(amb.spawn_coordinator('ent', info)['id'], 'abc')  # nada mudou
         projects = self.root / 'projects'
         conv = projects / re.sub(r'[^A-Za-z0-9]', '-', str(self.root / 'tarefas' / 'ent'))
         conv.mkdir(parents=True)
         (conv / 'sess-1.jsonl').write_text('{"content": "Você é a sessão coordenadora da funcionalidade ent"}', encoding='utf-8')
-        rot.write_text('v2', encoding='utf-8')
-        calls = []
+        calls, alive = [], {'v': False}
 
         def fake_run(args, **kwargs):
             calls.append(args)
-            return type('R', (), {'returncode': 0, 'stdout': 'backgrounded · 9f9f · x', 'stderr': ''})()
+            if args[:2] == ['tmux', 'has-session']:
+                return type('R', (), {'returncode': 0 if alive['v'] else 1, 'stdout': '', 'stderr': ''})()
+            if args[:2] == ['tmux', 'new-session']:
+                alive['v'] = True
+            return type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
         with patch.object(amb, 'CLAUDE_PROJECTS', projects), patch.object(amb.subprocess, 'run', side_effect=fake_run):
+            # Coordenadora antiga (segundo plano, sem tmux): reabre a MESMA conversa, sem prompt novo (roteiro igual).
+            info['coordenador'] = {'id': 'abc', 'versao': amb.roteiro_versao(info)}
             res = amb.spawn_coordinator('ent', info)
-        self.assertEqual((res['id'], res['sessao']), ('9f9f', 'sess-1'))
-        self.assertEqual(res['versao'], amb.roteiro_versao(info))
-        self.assertIn('--resume', calls[0])
-        self.assertEqual(calls[0][calls[0].index('--resume') + 1], 'sess-1')
-        self.assertIn('Atualização do runner', calls[0][-1])
+            new = [c for c in calls if c[:2] == ['tmux', 'new-session']][0]
+            self.assertEqual((res['sessao'], res['tmux']), ('sess-1', 'coord-ent'))
+            self.assertEqual(new[new.index('--resume') + 1], 'sess-1')
+            self.assertFalse(any('Atualização' in a for a in new))
+            # Viva e roteiro igual: nada.
+            info['coordenador'] = res
+            calls.clear()
+            self.assertEqual(amb.spawn_coordinator('ent', info)['sessao'], 'sess-1')
+            self.assertEqual([c[:2] for c in calls], [['tmux', 'has-session']])
+            # Viva e roteiro novo: cola a atualizacao na mesma sessao.
+            rot.write_text('v2', encoding='utf-8')
+            calls.clear()
+            res = amb.spawn_coordinator('ent', info)
+            self.assertEqual(res['versao'], amb.roteiro_versao(info))
+            self.assertIn(['tmux', 'send-keys', '-t', '=coord-ent:', 'Enter'], calls)
+
 
 if __name__ == '__main__':
     unittest.main()

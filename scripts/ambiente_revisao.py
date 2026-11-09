@@ -431,46 +431,72 @@ def update_prompt(alvo, prompt):
             'versão que você entregou antes. As instruções valem como no início:\n\n' + prompt)
 
 
-def resume_coordinator(folder, session, prompt):
-    """Continua a mesma conversa em segundo plano (a sala segue com uma sessao so)."""
-    claude = shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
-    run = subprocess.run([claude, '--bg', '--resume', session, '-n', 'Coordenação: ' + folder.name, '--', prompt],
-                         cwd=folder, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
-    short = re.search(r'backgrounded\s*·\s*([\w-]+)', run.stdout or '')
-    if run.returncode or not short:
-        raise RuntimeError(((run.stderr or '') + (run.stdout or '')).strip()[:200] or 'claude --bg nao respondeu')
-    return short.group(1)
+def claude_bin():
+    return shutil.which('claude') or str(Path.home() / '.local' / 'bin' / 'claude')
+
+
+def tmux_name(alvo):
+    return 'coord-' + re.sub(r'[^A-Za-z0-9_-]', '-', alvo)[:44]
+
+
+def tmux_alive(name):
+    return subprocess.run(['tmux', 'has-session', '-t', '=' + name], capture_output=True).returncode == 0
+
+
+def tmux_start(alvo, folder, title, session=None, prompt=None):
+    """Coordenadora interativa no tmux (como o console): fica viva entre as respostas, aparece no Habblaud e recebe
+    as mensagens dele. Parada, nao gasta cota."""
+    import uuid
+    sid = session or str(uuid.uuid4())
+    cmd = [claude_bin(), '--resume', sid] if session else [claude_bin(), '--session-id', sid]
+    cmd += ['-n', title[:60]]
+    if prompt:
+        cmd.append(prompt)
+    run = subprocess.run(['tmux', 'new-session', '-d', '-s', tmux_name(alvo), '-c', str(folder), '--', *cmd],
+                         capture_output=True, text=True, timeout=30)
+    if run.returncode:
+        raise RuntimeError(((run.stderr or '') + (run.stdout or '')).strip()[:200] or 'tmux nao abriu a sessao')
+    return sid
+
+
+def tmux_send(name, text):
+    """Cola o texto inteiro de uma vez (bracketed paste) e manda Enter: o pedido vira uma mensagem so."""
+    buf = 'coord-' + name
+    subprocess.run(['tmux', 'load-buffer', '-b', buf, '-'], input=text, text=True, check=True, capture_output=True)
+    subprocess.run(['tmux', 'paste-buffer', '-p', '-d', '-b', buf, '-t', '=' + name + ':'], check=True, capture_output=True)
+    subprocess.run(['tmux', 'send-keys', '-t', '=' + name + ':', 'Enter'], check=True, capture_output=True)
+
+
+def tmux_stop(alvo):
+    subprocess.run(['tmux', 'kill-session', '-t', '=' + tmux_name(alvo)], capture_output=True)
 
 
 def spawn_coordinator(alvo, info, prompt=None):
-    """Abre a sessao coordenadora na pasta da funcionalidade/revisao (sala dela no Habblaud), uma por sala.
+    """Sessao coordenadora da sala (pasta da funcionalidade/revisao), uma por sala, interativa no tmux.
 
-    Se a sala ja tem coordenadora e o roteiro mudou, a mesma conversa retoma com o roteiro novo."""
-    import urllib.request
+    Ja viva e roteiro igual: nada. Viva e roteiro novo: recebe a atualizacao na mesma conversa. Fora do ar (reboot,
+    ou de antes, quando rodava em segundo plano e sumia do Habblaud ao terminar o turno): reabre a mesma conversa."""
     old = (info.get('coordenador') or {})
     folder = ROOT / 'tarefas' / alvo
     versao = roteiro_versao(info)
     prompt = prompt or coordinator_prompt(alvo, info)
-    if old.get('id') and not old.get('erro'):
-        if old.get('versao') == versao:
-            return old
-        session = coordinator_session(folder)
-        if session:
-            try:
-                short = resume_coordinator(folder, session, update_prompt(alvo, prompt))
-                return {**old, 'id': short, 'sessao': session, 'versao': versao, 'at': runner.now()}
-            except (OSError, subprocess.SubprocessError, RuntimeError) as error:
-                return {**old, 'erro_retomada': str(error)[:200]}
-    body = json.dumps({'folder': str(folder), 'prompt': prompt}).encode('utf-8')
-    req = urllib.request.Request(HABBLAUD + '/api/spawn', data=body, method='POST',
-                                 headers={'Content-Type': 'application/json', 'Origin': 'http://localhost:4747'})
+    name = tmux_name(alvo)
+    title = 'Coordenação: ' + alvo
+    mudou = old.get('versao') != versao
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode('utf-8') or '{}')
-        return {'id': data.get('id'), 'at': runner.now(), 'pasta': str(folder), 'versao': versao}
-    except (OSError, ValueError) as error:
-        return {'erro': 'Habblaud nao abriu a sessao coordenadora: ' + str(error)[:200], 'pasta': str(folder)}
+        if tmux_alive(name):
+            if mudou:
+                tmux_send(name, update_prompt(alvo, prompt))
+            return {**old, 'tmux': name, 'versao': versao, **({'at': runner.now()} if mudou else {})}
+        session = old.get('sessao') if old.get('tmux') else None
+        session = session or (coordinator_session(folder) if old.get('id') else None)
+        if session:
+            sid = tmux_start(alvo, folder, title, session, update_prompt(alvo, prompt) if mudou else None)
+        else:
+            sid = tmux_start(alvo, folder, title, None, prompt)
+        return {'id': sid[:8], 'sessao': sid, 'tmux': name, 'versao': versao, 'at': runner.now(), 'pasta': str(folder)}
+    except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+        return {**old, 'erro': 'coordenadora nao abriu: ' + str(error)[:200], 'pasta': str(folder)}
 
 
 def subir_servidores(alvo, info, host, ports, repos):
@@ -661,6 +687,7 @@ def encerrar(alvo):
         subprocess.run(['systemctl', '--user', 'stop', unit_name(alvo, kind)], capture_output=True)
         subprocess.run(['tailscale', 'serve', f'--https={ports[kind][1]}', 'off'], capture_output=True, timeout=30)
     free_ports(alvo)
+    tmux_stop(alvo)  # a sala acaba junto com o ambiente
     if path.exists():
         info['encerrado_em'] = runner.now()
         runner.save(path, info)
